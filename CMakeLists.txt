@@ -13,6 +13,7 @@ target_compile_definitions(snip_lite PRIVATE UNICODE _UNICODE)
 target_link_libraries(snip_lite PRIVATE
   user32
   gdi32
+  shell32
 )
 
 if (MSVC)
