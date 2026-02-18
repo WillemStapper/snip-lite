@@ -6,6 +6,7 @@
 // - Hotkey start capture, muis doet de rest.
 // - Instellingen zijn runtime (blijven zo tot je ze via RMB verandert).
 
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <windowsx.h>     // GET_X_LPARAM / GET_Y_LPARAM

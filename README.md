@@ -17,3 +17,5 @@ Run:
 Known quirks:
 
 Photoshop CS6: capture bitmap moet bottom-up (biHeight positief), anders vertical flip.
+
+TODO:
