@@ -76,6 +76,7 @@ static bool g_autoDismissAfterSave = false;
 static std::wstring g_saveDir;         // persistent
 static std::wstring g_lastSavedFile;   // persistent
 static std::wstring g_editorExe;       // persistent: "Open in..." program
+static std::wstring g_tempEditFile;   // alleen voor huidige preview/capture
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
@@ -129,6 +130,17 @@ static std::wstring IniReadStr(const wchar_t* section, const wchar_t* key, const
     return buf;
 }
 
+static std::wstring TimestampedFileNameBmp() {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+
+    wchar_t buf[128]{};
+    swprintf_s(buf, L"snip_%04u%02u%02u_%02u%02u%02u_%03u.bmp",
+        st.wYear, st.wMonth, st.wDay,
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return buf;
+}
+
 static int IniReadInt(const wchar_t* section, const wchar_t* key, int defVal) {
     return GetPrivateProfileIntW(section, key, defVal, SettingsFile().c_str());
 }
@@ -158,6 +170,18 @@ static std::wstring DefaultSaveDir() {
     return dir;
 }
 
+static std::wstring TempDir() {
+    std::wstring lad = GetEnvW(L"LOCALAPPDATA");
+    if (lad.empty()) return L".\\snip-lite-tmp";
+    return lad + L"\\snip-lite\\tmp";
+}
+
+static std::wstring MakeTempEditPath() {
+    std::wstring dir = TempDir();
+    EnsureDirectoryRecursive(dir + L"\\");
+    return dir + L"\\" + TimestampedFileNameBmp();  // bv snip_...bmp
+}
+
 static void LoadSettings() {
     g_saveDir = IniReadStr(L"General", L"SaveDir", DefaultSaveDir());
     g_autoDismissAfterSave = (IniReadInt(L"General", L"AutoDismiss", 0) != 0);
@@ -176,6 +200,17 @@ static void SaveSettings() {
     IniWriteStr(L"General", L"EditorExe", g_editorExe);
     IniWriteStr(L"General", L"LastSavedFile", g_lastSavedFile);
     IniWriteInt(L"General", L"Mode", (int)g_mode);
+}
+
+static std::wstring DirName(const std::wstring& path) {
+    const size_t pos = path.find_last_of(L"\\/");
+    if (pos == std::wstring::npos) return L"";
+    return path.substr(0, pos);
+}
+
+static void PreviewDropTopmost(HWND hwnd) {
+    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // =========================================================
@@ -219,17 +254,6 @@ static void SetStatus(HWND hwndPreview, const std::wstring& s) {
     g_statusText = s;
     InvalidateRect(hwndPreview, nullptr, TRUE);
     SetTimer(hwndPreview, TIMER_STATUS_CLEAR, 1500, nullptr);
-}
-
-static std::wstring TimestampedFileNameBmp() {
-    SYSTEMTIME st{};
-    GetLocalTime(&st);
-
-    wchar_t buf[128]{};
-    swprintf_s(buf, L"snip_%04u%02u%02u_%02u%02u%02u_%03u.bmp",
-        st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
-    return buf;
 }
 
 // =========================================================
@@ -309,6 +333,20 @@ static bool PickExe(HWND owner, std::wstring& outExe) {
     };
     pfd->SetFileTypes((UINT)_countof(spec), spec);
     pfd->SetFileTypeIndex(1);
+    // Startfolder voor de EXE-picker:
+    // 1) Als er al een editor gekozen is: open in die map
+    // 2) Anders: Program Files (x86) (jouw wens), fallback naar Program Files
+    std::wstring start = DirName(g_editorExe);
+    if (start.empty()) start = GetEnvW(L"ProgramFiles(x86)");
+    if (start.empty()) start = GetEnvW(L"ProgramFiles"); // fallback
+
+    if (!start.empty()) {
+        IShellItem* psi = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(start.c_str(), nullptr, IID_PPV_ARGS(&psi))) && psi) {
+            pfd->SetFolder(psi);          // of: pfd->SetDefaultFolder(psi);
+            psi->Release();
+        }
+    }
 
     hr = pfd->Show(owner);
     if (SUCCEEDED(hr)) {
@@ -636,7 +674,36 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (wParam == VK_ESCAPE) { DestroyPreview(); return 0; }
         return 0;
 
-        // === drag window by clicking anywhere except buttons
+    case WM_SETCURSOR: {
+        // Windows geeft in lParam de hit-test code mee (HTCLIENT / HTCAPTION / etc.)
+        const WORD ht = LOWORD(lParam);
+
+        // Als wij sleepgebied teruggeven als HTCAPTION -> maak cursor een handje
+        if (ht == HTCAPTION) {
+            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            return TRUE;
+        }
+
+        // Als het client-area is (buttons), ook handje
+        if (ht == HTCLIENT) {
+            POINT pt{};
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+
+            if (PtInRectEx(g_btnSave, pt) || PtInRectEx(g_btnEdit, pt) || PtInRectEx(g_btnDismiss, pt)) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                return TRUE;
+            }
+
+            // Overige client-area: normale pijl
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+            return TRUE;
+        }
+
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    // === drag window by clicking anywhere except buttons
     case WM_NCHITTEST: {
         LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
         if (hit != HTCLIENT) return hit;
@@ -650,7 +717,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return HTCAPTION;
     }
 
-                     // === remember position/size after move/resize
+    // === remember position/size after move/resize
     case WM_EXITSIZEMOVE: {
         RECT wr{};
         GetWindowRect(hwnd, &wr);
@@ -684,20 +751,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         // Edit (open in chosen program)
         if (PtInRectEx(g_btnEdit, p)) {
-            if (g_lastSavedFile.empty()) {
-                // eerst save zodat er iets te openen is
-                if (g_saveDir.empty()) g_saveDir = DefaultSaveDir();
-                EnsureDirectoryRecursive(g_saveDir + L"\\");
-
-                std::wstring filePath = g_saveDir + L"\\" + TimestampedFileNameBmp();
-                if (!SaveBitmapAsBmpFile(g_captureBmp, filePath)) {
-                    SetStatus(hwnd, L"Save failed");
-                    return 0;
-                }
-                g_lastSavedFile = filePath;
-                SaveSettings();
-            }
-
+            // 1) Zorg dat we een editor hebben
             if (g_editorExe.empty()) {
                 std::wstring exe;
                 if (!PickExe(hwnd, exe)) { SetStatus(hwnd, L"Canceled"); return 0; }
@@ -705,8 +759,19 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 SaveSettings();
             }
 
-            if (OpenInEditor(g_editorExe, g_lastSavedFile)) SetStatus(hwnd, L"Opened");
+            // 2) Schrijf HUIDIGE capture naar een temp bestand
+            std::wstring tempPath = MakeTempEditPath();
+            if (!SaveBitmapAsBmpFile(g_captureBmp, tempPath)) {
+                SetStatus(hwnd, L"Save failed");
+                return 0;
+            }
+            g_tempEditFile = tempPath;
+
+            // 3) Open temp in editor
+            PreviewDropTopmost(hwnd);   // (als je die helper al hebt)
+            if (OpenInEditor(g_editorExe, g_tempEditFile)) SetStatus(hwnd, L"Opened");
             else SetStatus(hwnd, L"Open failed");
+
             return 0;
         }
 
@@ -729,11 +794,13 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_COMMAND: {
         switch (LOWORD(wParam)) {
         case 2001: { // open capture folder
+            PreviewDropTopmost(hwnd);
             if (g_saveDir.empty()) g_saveDir = DefaultSaveDir();
             OpenPath(g_saveDir);
             return 0;
         }
         case 2003: { // choose capture folder
+            PreviewDropTopmost(hwnd);
             std::wstring picked;
             std::wstring start = g_saveDir.empty() ? DefaultSaveDir() : g_saveDir;
             if (PickFolder(hwnd, start, picked)) {
@@ -748,11 +815,13 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return 0;
         }
         case 2002: { // toggle auto-dismiss
+            PreviewDropTopmost(hwnd);
             g_autoDismissAfterSave = !g_autoDismissAfterSave;
             SaveSettings();
             return 0;
         }
         case 2102: { // choose program
+            PreviewDropTopmost(hwnd);
             std::wstring exe;
             if (PickExe(hwnd, exe)) {
                 g_editorExe = exe;
@@ -764,16 +833,34 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
             return 0;
         }
-        case 2101: { // open in last program
-            if (g_lastSavedFile.empty()) { SetStatus(hwnd, L"No saved file"); return 0; }
+        case 2101: { // Open in (last program) - voorkeur: huidige capture
+            // 1) Zorg dat er een editor gekozen is
             if (g_editorExe.empty()) {
                 std::wstring exe;
                 if (!PickExe(hwnd, exe)) { SetStatus(hwnd, L"Canceled"); return 0; }
                 g_editorExe = exe;
                 SaveSettings();
             }
-            if (OpenInEditor(g_editorExe, g_lastSavedFile)) SetStatus(hwnd, L"Opened");
+            std::wstring target;
+
+            // 2) Probeer eerst het HUIDIGE knipsel (preview) als temp-bestand
+            if (g_captureBmp) {
+                if (g_tempEditFile.empty()) {
+                    std::wstring tempPath = MakeTempEditPath();
+                    if (SaveBitmapAsBmpFile(g_captureBmp, tempPath)) {
+                        g_tempEditFile = tempPath;
+                    }
+                }
+                target = g_tempEditFile;
+            }
+            // 3) Fallback: laatst opgeslagen bestand (als er geen capture/temp is)
+            if (target.empty()) target = g_lastSavedFile;
+            if (target.empty()) { SetStatus(hwnd, L"No file"); return 0; }
+            // 4) Open in editor
+            PreviewDropTopmost(hwnd); // als je die helper al gebruikt
+            if (OpenInEditor(g_editorExe, target)) SetStatus(hwnd, L"Opened");
             else SetStatus(hwnd, L"Open failed");
+
             return 0;
         }
         }
@@ -1023,6 +1110,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         if (clipOk) {
             DestroyOverlay();
+            g_tempEditFile.clear();
             CreatePreviewWindow();
         }
         else {
