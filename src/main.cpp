@@ -19,6 +19,8 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <wincodec.h>    // PNG/JPEG via WIC
+#pragma comment(lib, "windowscodecs.lib")
 
 // -----------------------------
 // Hotkey
@@ -82,6 +84,20 @@ static bool g_lassoSelecting = false;
 static std::vector<POINT> g_lassoPtsClient;
 static RECT g_lassoBoundsClient{};
 static bool g_captureHasAlpha = false;   // straks voor preview + save
+// -----------------------------
+// Save format (persistent)
+// -----------------------------
+enum class SaveFormat { Png = 0, Jpeg = 1, Bmp = 2 };
+static SaveFormat g_saveFormat = SaveFormat::Png; // default = PNG
+
+static const wchar_t* SaveFormatText(SaveFormat f) {
+    switch (f) {
+    case SaveFormat::Png:  return L"PNG";
+    case SaveFormat::Jpeg: return L"JPEG";
+    case SaveFormat::Bmp:  return L"BMP";
+    default:               return L"?";
+    }
+}
 
 // -----------------------------
 // Preview UI state
@@ -150,14 +166,22 @@ static std::wstring IniReadStr(const wchar_t* section, const wchar_t* key, const
     return buf;
 }
 
-static std::wstring TimestampedFileNameBmp() {
+static std::wstring TimestampedFileName(SaveFormat fmt) {
     SYSTEMTIME st{};
     GetLocalTime(&st);
 
+    const wchar_t* ext = L".png";
+    switch (fmt) {
+    case SaveFormat::Png:  ext = L".png"; break;
+    case SaveFormat::Jpeg: ext = L".jpg"; break;
+    case SaveFormat::Bmp:  ext = L".bmp"; break;
+    }
+
     wchar_t buf[128]{};
-    swprintf_s(buf, L"snip_%04u%02u%02u_%02u%02u%02u_%03u.bmp",
+    swprintf_s(buf, L"snip_%04u%02u%02u_%02u%02u%02u_%03u%s",
         st.wYear, st.wMonth, st.wDay,
-        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+        st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+        ext);
     return buf;
 }
 
@@ -196,10 +220,10 @@ static std::wstring TempDir() {
     return lad + L"\\snip-lite\\tmp";
 }
 
-static std::wstring MakeTempEditPath() {
+static std::wstring MakeTempEditPath(SaveFormat fmt) {
     std::wstring dir = TempDir();
     EnsureDirectoryRecursive(dir + L"\\");
-    return dir + L"\\" + TimestampedFileNameBmp();  // bv snip_...bmp
+    return dir + L"\\" + TimestampedFileName(fmt);  // snip_...png/jpg/bmp
 }
 
 static void LoadSettings() {
@@ -212,6 +236,11 @@ static void LoadSettings() {
     if (m < 0) m = 0;
     if (m > 3) m = 3;
     g_mode = (Mode)m;
+
+    int sf = IniReadInt(L"General", L"SaveFormat", 0); // default = PNG
+    if (sf < 0) sf = 0;
+    if (sf > 2) sf = 2;
+    g_saveFormat = (SaveFormat)sf;
 }
 
 static void SaveSettings() {
@@ -220,6 +249,7 @@ static void SaveSettings() {
     IniWriteStr(L"General", L"EditorExe", g_editorExe);
     IniWriteStr(L"General", L"LastSavedFile", g_lastSavedFile);
     IniWriteInt(L"General", L"Mode", (int)g_mode);
+    IniWriteInt(L"General", L"SaveFormat", (int)g_saveFormat);
 }
 
 static std::wstring DirName(const std::wstring& path) {
@@ -495,6 +525,15 @@ static bool CaptureRectToBitmap(const RECT& screenRect, HBITMAP& outBmp, int& ou
 
     const DWORD rop = SRCCOPY | CAPTUREBLT;
     const BOOL ok = BitBlt(hdcMem, 0, 0, w, h, hdcScreen, screenRect.left, screenRect.top, rop);
+    // Zorg dat alpha standaard opaque is (anders wordt PNG vaak "transparant")
+    if (bits) {
+        BYTE* p = (BYTE*)bits;
+        const size_t stride = (size_t)w * 4;
+        for (int y = 0; y < h; ++y) {
+            BYTE* row = p + (size_t)y * stride;
+            for (int x = 0; x < w; ++x) row[x * 4 + 3] = 255;
+        }
+    }
 
     SelectObject(hdcMem, old);
     DeleteDC(hdcMem);
@@ -721,6 +760,99 @@ static bool SaveBitmapAsBmpFile(HBITMAP hbmp, const std::wstring& filePath) {
     return ok;
 }
 
+static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
+    if (!hbmp) return false;
+    if (fmt != SaveFormat::Png && fmt != SaveFormat::Jpeg) return false;
+
+    bool needUninit = false;
+    CoInitForDialog(needUninit);
+
+    IWICImagingFactory* factory = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&factory));
+    if (FAILED(hr) || !factory) {
+        if (needUninit) CoUninitialize();
+        return false;
+    }
+
+    IWICStream* stream = nullptr;
+    hr = factory->CreateStream(&stream);
+    if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(filePath.c_str(), GENERIC_WRITE);
+
+    const GUID container = (fmt == SaveFormat::Png) ? GUID_ContainerFormatPng : GUID_ContainerFormatJpeg;
+
+    IWICBitmapEncoder* encoder = nullptr;
+    if (SUCCEEDED(hr)) hr = factory->CreateEncoder(container, nullptr, &encoder);
+    if (SUCCEEDED(hr)) hr = encoder->Initialize(stream, WICBitmapEncoderNoCache);
+
+    IWICBitmapFrameEncode* frame = nullptr;
+    IPropertyBag2* bag = nullptr;
+    if (SUCCEEDED(hr)) hr = encoder->CreateNewFrame(&frame, &bag);
+
+    // JPEG quality (0..1)
+    if (SUCCEEDED(hr) && fmt == SaveFormat::Jpeg && bag) {
+        PROPBAG2 pb{};
+        pb.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+        VARIANT v{};
+        VariantInit(&v);
+        v.vt = VT_R4;
+        v.fltVal = 0.92f;
+        bag->Write(1, &pb, &v);
+        VariantClear(&v);
+    }
+
+    if (SUCCEEDED(hr)) hr = frame->Initialize(bag);
+
+    DIBSECTION ds{};
+    if (SUCCEEDED(hr)) {
+        if (GetObjectW(hbmp, sizeof(ds), &ds) == 0) hr = E_FAIL;
+    }
+    const int w = ds.dsBmih.biWidth;
+    const int h = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
+
+    if (SUCCEEDED(hr)) hr = frame->SetSize((UINT)w, (UINT)h);
+
+    GUID pf = (fmt == SaveFormat::Jpeg) ? GUID_WICPixelFormat24bppBGR : GUID_WICPixelFormat32bppBGRA;
+    if (SUCCEEDED(hr)) {
+        GUID setPf = pf;
+        frame->SetPixelFormat(&setPf);
+    }
+
+    IWICBitmap* wicBmp = nullptr;
+    if (SUCCEEDED(hr)) hr = factory->CreateBitmapFromHBITMAP(hbmp, nullptr, WICBitmapUseAlpha, &wicBmp);
+
+    IWICFormatConverter* conv = nullptr;
+    if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&conv);
+
+    if (SUCCEEDED(hr)) {
+        hr = conv->Initialize(wicBmp, pf, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+    }
+
+    if (SUCCEEDED(hr)) hr = frame->WriteSource(conv, nullptr);
+    if (SUCCEEDED(hr)) hr = frame->Commit();
+    if (SUCCEEDED(hr)) hr = encoder->Commit();
+
+    if (conv) conv->Release();
+    if (wicBmp) wicBmp->Release();
+    if (bag) bag->Release();
+    if (frame) frame->Release();
+    if (encoder) encoder->Release();
+    if (stream) stream->Release();
+    if (factory) factory->Release();
+    if (needUninit) CoUninitialize();
+
+    return SUCCEEDED(hr);
+}
+
+static bool SaveBitmapFile(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
+    switch (fmt) {
+    case SaveFormat::Png:  return SaveBitmapWic(hbmp, filePath, fmt);
+    case SaveFormat::Jpeg: return SaveBitmapWic(hbmp, filePath, fmt);
+    case SaveFormat::Bmp:  return SaveBitmapAsBmpFile(hbmp, filePath);
+    default:               return false;
+    }
+}
+
 static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClient, const RECT& boundsClient) {
     if (!hbmp || ptsClient.size() < 3) return false;
 
@@ -836,6 +968,16 @@ static void ShowSaveMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
     AppendMenuW(menu, MF_STRING, 2001, L"Open capture folder");
     AppendMenuW(menu, MF_STRING, 2003, L"Choose capture folder...");
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    HMENU fmt = CreatePopupMenu();
+    AppendMenuW(fmt, MF_STRING | (g_saveFormat == SaveFormat::Png ? MF_CHECKED : 0), 2010, L"PNG");
+    AppendMenuW(fmt, MF_STRING | (g_saveFormat == SaveFormat::Jpeg ? MF_CHECKED : 0), 2011, L"JPEG");
+    AppendMenuW(fmt, MF_STRING | (g_saveFormat == SaveFormat::Bmp ? MF_CHECKED : 0), 2012, L"BMP");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)fmt, L"Save format");
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING | (g_autoDismissAfterSave ? MF_CHECKED : 0), 2002, L"Auto-dismiss after Save");
 
     POINT pt{};
@@ -982,11 +1124,19 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             if (g_saveDir.empty()) g_saveDir = DefaultSaveDir();
             EnsureDirectoryRecursive(g_saveDir + L"\\");
 
-            std::wstring filePath = g_saveDir + L"\\" + TimestampedFileNameBmp();
-            if (SaveBitmapAsBmpFile(g_captureBmp, filePath)) {
+            const bool forcePng = g_captureHasAlpha;
+            const SaveFormat actual = forcePng ? SaveFormat::Png : g_saveFormat;
+
+            std::wstring filePath = g_saveDir + L"\\" + TimestampedFileName(actual);
+
+            if (SaveBitmapFile(g_captureBmp, filePath, actual)) {
                 g_lastSavedFile = filePath;
                 SaveSettings();
-                SetStatus(hwnd, L"Saved");
+
+                std::wstring statusText = L"Saved ";
+                statusText += SaveFormatText(actual);
+                SetStatus(hwnd, statusText);
+
                 if (g_autoDismissAfterSave) DestroyPreview();
             }
             else {
@@ -1006,12 +1156,15 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
 
             // 2) Schrijf HUIDIGE capture naar een temp bestand
-            std::wstring tempPath = MakeTempEditPath();
-            if (!SaveBitmapAsBmpFile(g_captureBmp, tempPath)) {
+            SaveFormat tmpFmt = g_captureHasAlpha ? SaveFormat::Png : SaveFormat::Bmp;
+
+            std::wstring tempPath = MakeTempEditPath(tmpFmt);
+            if (!SaveBitmapFile(g_captureBmp, tempPath, tmpFmt)) {
                 SetStatus(hwnd, L"Save failed");
                 return 0;
             }
             g_tempEditFile = tempPath;
+
 
             // 3) Open temp in editor
             PreviewDropTopmost(hwnd);   // (als je die helper al hebt)
@@ -1066,6 +1219,11 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             SaveSettings();
             return 0;
         }
+
+        case 2010: g_saveFormat = SaveFormat::Png;  SaveSettings(); SetStatus(hwnd, L"Format: PNG");  return 0;
+        case 2011: g_saveFormat = SaveFormat::Jpeg; SaveSettings(); SetStatus(hwnd, L"Format: JPEG"); return 0;
+        case 2012: g_saveFormat = SaveFormat::Bmp;  SaveSettings(); SetStatus(hwnd, L"Format: BMP");  return 0;
+
         case 2102: { // choose program
             PreviewDropTopmost(hwnd);
             std::wstring exe;
@@ -1091,14 +1249,21 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
             // 2) Probeer eerst het HUIDIGE knipsel (preview) als temp-bestand
             if (g_captureBmp) {
-                if (g_tempEditFile.empty()) {
-                    std::wstring tempPath = MakeTempEditPath();
-                    if (SaveBitmapAsBmpFile(g_captureBmp, tempPath)) {
+                SaveFormat tmpFmt = g_captureHasAlpha ? SaveFormat::Png : SaveFormat::Bmp;
+
+                // Maak altijd een verse temp als:
+                // - er nog geen temp is
+                // - of alpha aanwezig is (dan wil je zeker PNG)
+                if (g_tempEditFile.empty() || g_captureHasAlpha) {
+                    std::wstring tempPath = MakeTempEditPath(tmpFmt);
+                    if (SaveBitmapFile(g_captureBmp, tempPath, tmpFmt)) {
                         g_tempEditFile = tempPath;
                     }
                 }
+
                 target = g_tempEditFile;
             }
+
             // 3) Fallback: laatst opgeslagen bestand (als er geen capture/temp is)
             if (target.empty()) target = g_lastSavedFile;
             if (target.empty()) { SetStatus(hwnd, L"No file"); return 0; }
@@ -1311,6 +1476,7 @@ static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr) {
     GdiFlush();
 
     FreeCapture();
+    g_captureHasAlpha = false;  // belangrijk: normale captures zijn opaque
     const bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
     const bool clipOk = capOk ? CopyBitmapToClipboard(g_captureBmp) : false;
 
