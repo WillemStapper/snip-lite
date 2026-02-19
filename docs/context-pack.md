@@ -4,7 +4,7 @@
 - Repo: https://github.com/WillemStapper/snip-lite
 - Branch: main
 ## commit invullen met: git rev-parse --short HEAD
-- Commit: 9161de6
+- Commit: da34124
 
 ## 1) Doel in 1 zin
 - Snip-tool zonder “grote GUI”: hotkey → selectie → preview → save/edit/clipboard.
@@ -59,7 +59,7 @@
   - AutoDismiss=0/1
   - EditorExe=
   - LastSavedFile=
-  - Mode=0/1/2
+  - Mode=0/1/2/3
 - Sectie `[Preview]`
   - X=, Y=, W=, H=
 
@@ -70,12 +70,13 @@
 - ===>> 5 (voorstel)
   - [ ] “Edit” altijd huidige selectie openen (temp-file) + optioneel temp cleanup
   - [ ] PNG export (WIC) als alternatief voor BMP
-  - [ ] Window/Monitor mode implementeren
+  - [X] Window/Monitor mode implementeren
 
 ## 10) Open vragen
 - Welke standaard editor wil je als fallback (als EditorExe leeg is)?
 - Moet Save standaard PNG worden zodra WIC er is?
 
 ## 11) Mini-log (laatste wijzigingen)
-- <datum>: <korte omschrijving>
-- <datum>: <korte omschrijving>
+- <18-02-2026>: Window/Monitor mode implementeren
+- <18-02-2026>: Freestyle (Lasso) toegevoegd
+- 

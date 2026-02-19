@@ -16,6 +16,9 @@
 #include <shobjidl.h>     // IFileDialog (folder picker / exe picker)
 #include <cstring>        // memcpy / memset
 #include <string>
+#include <vector>
+#include <algorithm>
+#include <cmath>
 
 // -----------------------------
 // Hotkey
@@ -27,7 +30,7 @@ static constexpr UINT HOTKEY_VK = 'S';            // Ctrl+Alt+S
 // -----------------------------
 // Modes
 // -----------------------------
-enum class Mode { Region = 0, Window = 1, Monitor = 2 };
+enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3 };
 static Mode g_mode = Mode::Region;
 
 static const wchar_t* ModeText(Mode m) {
@@ -35,6 +38,7 @@ static const wchar_t* ModeText(Mode m) {
     case Mode::Region:  return L"Mode: Region";
     case Mode::Window:  return L"Mode: Window";
     case Mode::Monitor: return L"Mode: Monitor";
+	case Mode::Freestyle: return L"Mode: Freestyle";
     default:            return L"Mode: ?";
     }
 }
@@ -57,11 +61,27 @@ static POINT g_selCur{};
 static RECT  g_selRectClient{};
 
 // -----------------------------
+// Hover state (Window/Monitor)
+// -----------------------------
+static bool  g_hoverValid = false;
+static HWND  g_hoverHwnd = nullptr;
+static RECT  g_hoverRectScreen{};
+static RECT  g_hoverRectClient{};
+
+// -----------------------------
 // Capture state (bitmap)
 // -----------------------------
 static HBITMAP g_captureBmp = nullptr;
 static int     g_captureW = 0;
 static int     g_captureH = 0;
+
+// -----------------------------
+// Freestyle (Lasso) state
+// -----------------------------
+static bool g_lassoSelecting = false;
+static std::vector<POINT> g_lassoPtsClient;
+static RECT g_lassoBoundsClient{};
+static bool g_captureHasAlpha = false;   // straks voor preview + save
 
 // -----------------------------
 // Preview UI state
@@ -190,7 +210,7 @@ static void LoadSettings() {
 
     int m = IniReadInt(L"General", L"Mode", 0);
     if (m < 0) m = 0;
-    if (m > 2) m = 2;
+    if (m > 3) m = 3;
     g_mode = (Mode)m;
 }
 
@@ -239,6 +259,83 @@ static RECT MakeNormalizedRect(POINT a, POINT b) {
 
 static bool PtInRectEx(const RECT& r, POINT p) {
     return (p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom);
+}
+
+// -----------------------------
+// Helpers: Window/Monitor pick
+// -----------------------------
+static void ClearHover() {
+    g_hoverValid = false;
+    g_hoverHwnd = nullptr;
+    ZeroMemory(&g_hoverRectScreen, sizeof(g_hoverRectScreen));
+    ZeroMemory(&g_hoverRectClient, sizeof(g_hoverRectClient));
+}
+
+static bool IsSnipLiteWindow(HWND h) {
+    return (h == g_hwndOverlay) || (h == g_hwndPreview) || (h == g_hwndMsg);
+}
+
+static bool GetWindowRectSafe(HWND h, RECT& out) {
+    if (!h) return false;
+    if (!GetWindowRect(h, &out)) return false;
+    return (out.right > out.left) && (out.bottom > out.top);
+}
+
+static bool IsCandidateCaptureWindow(HWND h) {
+    if (!h) return false;
+    if (IsSnipLiteWindow(h)) return false;
+    if (!IsWindowVisible(h)) return false;
+    if (IsIconic(h)) return false;
+
+    LONG_PTR style = GetWindowLongPtrW(h, GWL_STYLE);
+    if (style & WS_CHILD) return false;
+
+    RECT rc{};
+    if (!GetWindowRectSafe(h, rc)) return false;
+    if ((rc.right - rc.left) < 10 || (rc.bottom - rc.top) < 10) return false;
+
+    return true;
+}
+
+static HWND PickTopWindowAtPoint(POINT ptScreen, RECT& outRectScreen) {
+    for (HWND h = GetTopWindow(nullptr); h; h = GetWindow(h, GW_HWNDNEXT)) {
+        if (!IsCandidateCaptureWindow(h)) continue;
+        RECT rc{};
+        if (!GetWindowRectSafe(h, rc)) continue;
+        if (PtInRectEx(rc, ptScreen)) {
+            outRectScreen = rc;
+            return h;
+        }
+    }
+    return nullptr;
+}
+
+static bool GetMonitorRectAtPoint(POINT ptScreen, RECT& outRectScreen) {
+    HMONITOR mon = MonitorFromPoint(ptScreen, MONITOR_DEFAULTTONEAREST);
+    if (!mon) return false;
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) return false;
+
+    outRectScreen = mi.rcMonitor;
+    return (outRectScreen.right > outRectScreen.left) && (outRectScreen.bottom > outRectScreen.top);
+}
+
+static void SetHoverFromScreenRect(HWND hwndOverlay, HWND hoverHwnd, const RECT& screenRect) {
+    g_hoverHwnd = hoverHwnd;
+    g_hoverRectScreen = screenRect;
+
+    RECT ow{};
+    GetWindowRect(hwndOverlay, &ow);
+    g_hoverRectClient = {
+        screenRect.left - ow.left,
+        screenRect.top - ow.top,
+        screenRect.right - ow.left,
+        screenRect.bottom - ow.top
+    };
+
+    g_hoverValid = true;
 }
 
 static void FreeCapture() {
@@ -497,6 +594,80 @@ static bool CopyBitmapToClipboard(HBITMAP hbmp) {
     return true;
 }
 
+#pragma comment(lib, "Msimg32.lib")
+
+static bool CopyBitmapToClipboardAlphaV5(HBITMAP hbmp) {
+    if (!hbmp) return false;
+
+    DIBSECTION ds{};
+    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || ds.dsBm.bmBits == nullptr) return false;
+
+    const int w = ds.dsBmih.biWidth;
+    const int absH = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
+
+    const int srcStride = ds.dsBm.bmWidthBytes;
+    const int dstStride = w * 4;
+
+    const SIZE_T headerSize = sizeof(BITMAPV5HEADER);
+    const SIZE_T bitsSize = (SIZE_T)dstStride * (SIZE_T)absH;
+    const SIZE_T totalSize = headerSize + bitsSize;
+
+    HGLOBAL hMemV5 = GlobalAlloc(GMEM_MOVEABLE, totalSize);
+    if (!hMemV5) return false;
+
+    BYTE* p = (BYTE*)GlobalLock(hMemV5);
+    if (!p) { GlobalFree(hMemV5); return false; }
+
+    BITMAPV5HEADER bvh{};
+    bvh.bV5Size = sizeof(BITMAPV5HEADER);
+    bvh.bV5Width = w;
+    bvh.bV5Height = absH; // bottom-up
+    bvh.bV5Planes = 1;
+    bvh.bV5BitCount = 32;
+    bvh.bV5Compression = BI_BITFIELDS;
+    bvh.bV5RedMask = 0x00FF0000;
+    bvh.bV5GreenMask = 0x0000FF00;
+    bvh.bV5BlueMask = 0x000000FF;
+    bvh.bV5AlphaMask = 0xFF000000;
+    bvh.bV5CSType = LCS_sRGB;
+
+    std::memcpy(p, &bvh, sizeof(bvh));
+
+    const BYTE* srcBits = (const BYTE*)ds.dsBm.bmBits;
+    BYTE* dstBits = p + headerSize;
+
+    const bool srcTopDown = (ds.dsBmih.biHeight < 0);
+    const int copyBytes = (srcStride < dstStride) ? srcStride : dstStride;
+
+    for (int y = 0; y < absH; ++y) {
+        const int srcY = srcTopDown ? y : (absH - 1 - y);
+        const int dstY = (absH - 1 - y);
+
+        const BYTE* srcRow = srcBits + (SIZE_T)srcY * (SIZE_T)srcStride;
+        BYTE* dstRow = dstBits + (SIZE_T)dstY * (SIZE_T)dstStride;
+
+        std::memcpy(dstRow, srcRow, (size_t)copyBytes);
+        if (copyBytes < dstStride) std::memset(dstRow + copyBytes, 0, (size_t)(dstStride - copyBytes));
+    }
+
+    GlobalUnlock(hMemV5);
+
+    if (!OpenClipboard(nullptr)) { GlobalFree(hMemV5); return false; }
+    EmptyClipboard();
+
+    bool ok = (SetClipboardData(CF_DIBV5, hMemV5) != nullptr);
+
+    // fallback: ook CF_BITMAP aanbieden
+    HBITMAP copyBmp = (HBITMAP)CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
+    if (copyBmp) {
+        if (!SetClipboardData(CF_BITMAP, copyBmp)) DeleteObject(copyBmp);
+    }
+
+    CloseClipboard();
+    if (!ok) { GlobalFree(hMemV5); return false; }
+    return true;
+}
+
 static bool SaveBitmapAsBmpFile(HBITMAP hbmp, const std::wstring& filePath) {
     if (!hbmp) return false;
 
@@ -550,6 +721,80 @@ static bool SaveBitmapAsBmpFile(HBITMAP hbmp, const std::wstring& filePath) {
     return ok;
 }
 
+static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClient, const RECT& boundsClient) {
+    if (!hbmp || ptsClient.size() < 3) return false;
+
+    DIBSECTION ds{};
+    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || !ds.dsBm.bmBits) return false;
+
+    const int w = ds.dsBmih.biWidth;
+    const int h = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
+    const int stride = ds.dsBm.bmWidthBytes;
+
+    // polygon naar "local" coords (0..w/h)
+    std::vector<POINT> poly;
+    poly.reserve(ptsClient.size());
+    for (auto p : ptsClient) {
+        poly.push_back({ p.x - boundsClient.left, p.y - boundsClient.top });
+    }
+
+    BYTE* bits = (BYTE*)ds.dsBm.bmBits;
+    std::vector<double> xs;
+    xs.reserve(poly.size());
+
+    for (int y = 0; y < h; ++y) {
+        // DIB is bottom-up: y=0 (top) zit in memory op rij (h-1)
+        BYTE* row = bits + (size_t)(h - 1 - y) * (size_t)stride;
+
+        // bewaar originele rij (we gaan buitengebied leegmaken)
+        std::vector<BYTE> backup((size_t)w * 4);
+        std::memcpy(backup.data(), row, (size_t)w * 4);
+
+        // maak hele rij transparant
+        std::memset(row, 0, (size_t)w * 4);
+
+        xs.clear();
+
+        // snijpunten met scanline (even-odd rule)
+        const int n = (int)poly.size();
+        for (int i = 0; i < n; ++i) {
+            POINT a = poly[i];
+            POINT b = poly[(i + 1) % n];
+            if (a.y == b.y) continue;
+
+            int ymin = (a.y < b.y) ? a.y : b.y;
+            int ymax = (a.y < b.y) ? b.y : a.y;
+
+            if (y < ymin || y >= ymax) continue;
+
+            double t = (double)(y - a.y) / (double)(b.y - a.y);
+            double x = (double)a.x + t * (double)(b.x - a.x);
+            xs.push_back(x);
+        }
+
+        if (xs.size() < 2) continue;
+        std::sort(xs.begin(), xs.end());
+
+        for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+            int x0 = (int)std::ceil(xs[k]);
+            int x1 = (int)std::floor(xs[k + 1]);
+
+            if (x0 < 0) x0 = 0;
+            if (x1 > w) x1 = w;
+
+            for (int x = x0; x < x1; ++x) {
+                // BGRA
+                row[x * 4 + 0] = backup[x * 4 + 0];
+                row[x * 4 + 1] = backup[x * 4 + 1];
+                row[x * 4 + 2] = backup[x * 4 + 2];
+                row[x * 4 + 3] = 255; // alpha
+            }
+        }
+    }
+
+    return true;
+}
+
 static bool OpenInEditor(const std::wstring& editorExe, const std::wstring& filePath) {
     if (editorExe.empty() || filePath.empty()) return false;
 
@@ -579,6 +824,7 @@ static void ShowModeMenu(HWND hwndOwner) {
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Region ? MF_CHECKED : 0), 1001, L"Region");
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Window ? MF_CHECKED : 0), 1002, L"Window");
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Monitor ? MF_CHECKED : 0), 1003, L"Monitor");
+    AppendMenuW(menu, MF_STRING | (g_mode == Mode::Freestyle ? MF_CHECKED : 0), 1004, L"Freestyle (Lasso)");
 
     POINT pt{};
     GetCursorPos(&pt);
@@ -903,8 +1149,18 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             int dx = g_rcImage.left + (aw - dw) / 2;
             int dy = g_rcImage.top + (ah - dh) / 2;
 
-            SetStretchBltMode(hdc, HALFTONE);
-            StretchBlt(hdc, dx, dy, dw, dh, mem, 0, 0, iw, ih, SRCCOPY);
+            if (g_captureHasAlpha) {
+                BLENDFUNCTION bf{};
+                bf.BlendOp = AC_SRC_OVER;
+                bf.SourceConstantAlpha = 255;
+                bf.AlphaFormat = AC_SRC_ALPHA;
+
+                AlphaBlend(hdc, dx, dy, dw, dh, mem, 0, 0, iw, ih, bf);
+            }
+            else {
+                SetStretchBltMode(hdc, HALFTONE);
+                StretchBlt(hdc, dx, dy, dw, dh, mem, 0, 0, iw, ih, SRCCOPY);
+            }
 
             SelectObject(mem, old);
             DeleteDC(mem);
@@ -1030,14 +1286,65 @@ static void CreatePreviewWindow() {
 // =========================================================
 // Overlay
 // =========================================================
+static void LassoReset() {
+    g_lassoSelecting = false;
+    g_lassoPtsClient.clear();
+    ZeroMemory(&g_lassoBoundsClient, sizeof(g_lassoBoundsClient));
+}
+
 static void DestroyOverlay() {
+    LassoReset();
     g_selecting = false;
     g_hasSelection = false;
     ZeroMemory(&g_selRectClient, sizeof(g_selRectClient));
+	ClearHover();
 
     if (g_hwndOverlay) {
         DestroyWindow(g_hwndOverlay);
         g_hwndOverlay = nullptr;
+    }
+}
+
+static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr) {
+    ShowWindow(hwndOverlay, SW_HIDE);
+    Sleep(20);
+    GdiFlush();
+
+    FreeCapture();
+    const bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
+    const bool clipOk = capOk ? CopyBitmapToClipboard(g_captureBmp) : false;
+
+    if (clipOk) {
+        DestroyOverlay();
+        g_tempEditFile.clear();
+        CreatePreviewWindow();
+        return true;
+    }
+
+    MessageBeep(MB_ICONERROR);
+    ShowWindow(hwndOverlay, SW_SHOW);
+    InvalidateRect(hwndOverlay, nullptr, TRUE);
+    return false;
+}
+
+static void LassoAddPoint(POINT p) {
+    // punten uitdunnen: scheelt CPU bij masken
+    if (!g_lassoPtsClient.empty()) {
+        POINT last = g_lassoPtsClient.back();
+        int dx = p.x - last.x, dy = p.y - last.y;
+        if (dx * dx + dy * dy < 9) return; // <3px: negeren
+    }
+
+    g_lassoPtsClient.push_back(p);
+
+    if (g_lassoPtsClient.size() == 1) {
+        g_lassoBoundsClient = { p.x, p.y, p.x + 1, p.y + 1 };
+    }
+    else {
+        if (p.x < g_lassoBoundsClient.left)   g_lassoBoundsClient.left = p.x;
+        if (p.y < g_lassoBoundsClient.top)    g_lassoBoundsClient.top = p.y;
+        if (p.x + 1 > g_lassoBoundsClient.right)  g_lassoBoundsClient.right = p.x + 1;
+        if (p.y + 1 > g_lassoBoundsClient.bottom) g_lassoBoundsClient.bottom = p.y + 1;
     }
 }
 
@@ -1054,6 +1361,21 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_LBUTTONDOWN:
+        if (g_mode == Mode::Freestyle) {
+            SetCapture(hwnd);
+            LassoReset();
+            g_lassoSelecting = true;
+
+            POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            LassoAddPoint(p);
+
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        if (g_mode != Mode::Region) return 0;
+
+        ClearHover();
         SetCapture(hwnd);
         g_selecting = true;
         g_hasSelection = false;
@@ -1063,67 +1385,194 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
 
-    case WM_MOUSEMOVE:
-        if (!g_selecting) return 0;
-        g_selCur = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        g_selRectClient = MakeNormalizedRect(g_selStart, g_selCur);
-        InvalidateRect(hwnd, nullptr, TRUE);
-        return 0;
-
-    case WM_LBUTTONUP: {
-        if (!g_selecting) return 0;
-
-        g_selCur = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        g_selRectClient = MakeNormalizedRect(g_selStart, g_selCur);
-
-        g_selecting = false;
-        ReleaseCapture();
-
-        const int rw = g_selRectClient.right - g_selRectClient.left;
-        const int rh = g_selRectClient.bottom - g_selRectClient.top;
-        g_hasSelection = (rw >= 5 && rh >= 5);
-
-        if (!g_hasSelection) { InvalidateRect(hwnd, nullptr, TRUE); return 0; }
-
-        if (g_mode != Mode::Region) {
-            MessageBeep(MB_ICONWARNING);
+    case WM_MOUSEMOVE: {
+        if (g_mode == Mode::Freestyle && g_lassoSelecting) {
+            POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            LassoAddPoint(p);
             InvalidateRect(hwnd, nullptr, TRUE);
             return 0;
         }
 
-        RECT wr{};
-        GetWindowRect(hwnd, &wr);
+        // Region: rubberband rectangle
+        if (g_mode == Mode::Region) {
+            if (!g_selecting) return 0;
+            g_selCur = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            g_selRectClient = MakeNormalizedRect(g_selStart, g_selCur);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
 
-        RECT sr{};
-        sr.left = wr.left + g_selRectClient.left;
-        sr.top = wr.top + g_selRectClient.top;
-        sr.right = wr.left + g_selRectClient.right;
-        sr.bottom = wr.top + g_selRectClient.bottom;
+        // Window/Monitor: hover highlight under cursor
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(hwnd, &pt);
 
-        ShowWindow(hwnd, SW_HIDE);
-        Sleep(20);
-        GdiFlush();
-
-        FreeCapture();
-        const bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
-        const bool clipOk = capOk ? CopyBitmapToClipboard(g_captureBmp) : false;
-
-        if (clipOk) {
-            DestroyOverlay();
-            g_tempEditFile.clear();
-            CreatePreviewWindow();
+        if (g_mode == Mode::Window) {
+            RECT wr{};
+            HWND h = PickTopWindowAtPoint(pt, wr);
+            if (h) SetHoverFromScreenRect(hwnd, h, wr);
+            else ClearHover();
+        }
+        else if (g_mode == Mode::Monitor) {
+            RECT mr{};
+            if (GetMonitorRectAtPoint(pt, mr)) SetHoverFromScreenRect(hwnd, nullptr, mr);
+            else ClearHover();
         }
         else {
-            MessageBeep(MB_ICONERROR);
-            ShowWindow(hwnd, SW_SHOW);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            // Freestyle: later
+            ClearHover();
         }
+
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (g_mode == Mode::Freestyle && g_lassoSelecting) {
+            ReleaseCapture();
+            g_lassoSelecting = false;
+
+            if (g_lassoPtsClient.size() < 3) {
+                MessageBeep(MB_ICONWARNING);
+                LassoReset();
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
+            // bounds iets ruimer
+            RECT b = g_lassoBoundsClient;
+            b.left -= 2; b.top -= 2; b.right += 2; b.bottom += 2;
+
+            if ((b.right - b.left) < 5 || (b.bottom - b.top) < 5) {
+                MessageBeep(MB_ICONWARNING);
+                LassoReset();
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
+            RECT ow{};
+            GetWindowRect(hwnd, &ow);
+
+            RECT sr{
+                ow.left + b.left,
+                ow.top + b.top,
+                ow.left + b.right,
+                ow.top + b.bottom
+            };
+
+            ShowWindow(hwnd, SW_HIDE);
+            Sleep(20);
+            GdiFlush();
+
+            FreeCapture();
+            g_captureHasAlpha = false;
+
+            bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
+            if (!capOk) {
+                MessageBeep(MB_ICONERROR);
+                ShowWindow(hwnd, SW_SHOW);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
+            // mask: alpha buiten lasso = 0
+            if (!ApplyLassoAlphaMask(g_captureBmp, g_lassoPtsClient, b)) {
+                MessageBeep(MB_ICONERROR);
+                ShowWindow(hwnd, SW_SHOW);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            g_captureHasAlpha = true;
+
+            bool clipOk = CopyBitmapToClipboardAlphaV5(g_captureBmp);
+
+            if (clipOk) {
+                DestroyOverlay();
+                g_tempEditFile.clear();
+                CreatePreviewWindow();
+            }
+            else {
+                MessageBeep(MB_ICONERROR);
+                ShowWindow(hwnd, SW_SHOW);
+                InvalidateRect(hwnd, nullptr, TRUE);
+            }
+
+            LassoReset();
+            return 0;
+        }
+
+        // Region mode: capture dragged rectangle
+        if (g_mode == Mode::Region) {
+            if (!g_selecting) return 0;
+
+            g_selCur = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            g_selRectClient = MakeNormalizedRect(g_selStart, g_selCur);
+
+            g_selecting = false;
+            ReleaseCapture();
+
+            const int rw = g_selRectClient.right - g_selRectClient.left;
+            const int rh = g_selRectClient.bottom - g_selRectClient.top;
+            g_hasSelection = (rw >= 5 && rh >= 5);
+
+            if (!g_hasSelection) { InvalidateRect(hwnd, nullptr, TRUE); return 0; }
+
+            RECT ow{};
+            GetWindowRect(hwnd, &ow);
+
+            RECT sr{};
+            sr.left = ow.left + g_selRectClient.left;
+            sr.top = ow.top + g_selRectClient.top;
+            sr.right = ow.left + g_selRectClient.right;
+            sr.bottom = ow.top + g_selRectClient.bottom;
+
+            g_tempEditFile.clear();
+            CaptureScreenRectAndShowPreview(hwnd, sr);
+            return 0;
+        }
+
+        // Window/Monitor/Freestyle: capture on click
+        POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(hwnd, &pt);
+
+        RECT sr{};
+        bool have = false;
+
+        if (g_mode == Mode::Window) {
+            HWND h = PickTopWindowAtPoint(pt, sr);
+            have = (h != nullptr);
+        }
+        else if (g_mode == Mode::Monitor) {
+            have = GetMonitorRectAtPoint(pt, sr);
+        }
+        else {
+            // Freestyle (Lasso) is added to the menu, implementation follows later.
+            MessageBeep(MB_ICONWARNING);
+            ClearHover();
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        if (!have) {
+            MessageBeep(MB_ICONWARNING);
+            ClearHover();
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
+        g_tempEditFile.clear();
+        CaptureScreenRectAndShowPreview(hwnd, sr);
         return 0;
     }
 
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) {
-            if (g_selecting || g_hasSelection) {
+            if (g_lassoSelecting) {
+                LassoReset();
+                ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+            if (g_selecting) {
                 g_selecting = false;
                 g_hasSelection = false;
                 ReleaseCapture();
@@ -1138,9 +1587,10 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case 1001: g_mode = Mode::Region;  SaveSettings(); break;
-        case 1002: g_mode = Mode::Window;  SaveSettings(); break;
-        case 1003: g_mode = Mode::Monitor; SaveSettings(); break;
+        case 1001: g_mode = Mode::Region;    ClearHover(); SaveSettings(); break;
+        case 1002: g_mode = Mode::Window;    ClearHover(); SaveSettings(); break;
+        case 1003: g_mode = Mode::Monitor;   ClearHover(); SaveSettings(); break;
+        case 1004: g_mode = Mode::Freestyle; ClearHover(); SaveSettings(); break;
         default: break;
         }
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -1162,11 +1612,38 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         tr.left += 20; tr.top += 20;
         DrawTextW(hdc, ModeText(g_mode), -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
-        if (g_selecting || g_hasSelection) {
+        if (g_mode == Mode::Freestyle && (g_lassoSelecting || g_lassoPtsClient.size() >= 2)) {
+            if (g_lassoPtsClient.size() >= 2) {
+                HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+                HGDIOBJ oldPen = SelectObject(hdc, pen);
+                HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+                Polyline(hdc, g_lassoPtsClient.data(), (int)g_lassoPtsClient.size());
+
+                // optioneel: bounding box (handig bij debug)
+                // Rectangle(hdc, g_lassoBoundsClient.left, g_lassoBoundsClient.top,
+                //           g_lassoBoundsClient.right, g_lassoBoundsClient.bottom);
+
+                SelectObject(hdc, oldBrush);
+                SelectObject(hdc, oldPen);
+                DeleteObject(pen);
+            }
+        }
+
+        if (g_selecting) {
             HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
             HGDIOBJ oldPen = SelectObject(hdc, pen);
             HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
             Rectangle(hdc, g_selRectClient.left, g_selRectClient.top, g_selRectClient.right, g_selRectClient.bottom);
+            SelectObject(hdc, oldBrush);
+            SelectObject(hdc, oldPen);
+            DeleteObject(pen);
+        }
+        else if (g_hoverValid) {
+            HPEN pen = CreatePen(PS_SOLID, 2, RGB(100, 200, 255));
+            HGDIOBJ oldPen = SelectObject(hdc, pen);
+            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            Rectangle(hdc, g_hoverRectClient.left, g_hoverRectClient.top, g_hoverRectClient.right, g_hoverRectClient.bottom);
             SelectObject(hdc, oldBrush);
             SelectObject(hdc, oldPen);
             DeleteObject(pen);
@@ -1178,12 +1655,13 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_DESTROY:
         return 0;
-    }
-    return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+   return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-
+    
 static void CreateOverlay() {
     if (g_hwndOverlay) return;
+	ClearHover();
 
     static bool registered = false;
     if (!registered) {
