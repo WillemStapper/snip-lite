@@ -1,27 +1,72 @@
-# snip-lite (MVP)
+# snip-lite
 
-Doel (MVP):
-- Ctrl+Alt+S: overlay aan/uit
-- Crosshair cursor
-- Mode-tekst linksboven
-- Rechtermuisknop: mode-menu
-- ESC sluit overlay
+Minimalistische snip-tool voor Windows: **hotkey → selectie → preview → save/edit/clipboard**.  
+Geen “grote GUI”; alles gebeurt via een overlay + een kleine preview + popup-menu’s.
 
-Build (PowerShell):
-- cmake --preset vs2026-x64
-- cmake --build --preset debug
+## Wat het doet
 
-Run:
-- build/vs2026-x64/Debug/snip_lite.exe
+- **Hotkey:** `Ctrl + Alt + S` toggelt de overlay.
+- **Overlay:**
+  - Crosshair cursor
+  - Mode-tekst linksboven
+  - **Rechtsklik**: mode-menu
+  - `ESC`: sluiten / annuleren
+- **Modes:**
+  - **Region**: klik + sleep → rechthoek → capture
+  - **Window**: hover highlight → klik → capture van venster
+  - **Monitor**: hover highlight → klik → capture van monitor
+  - **Freestyle (Lasso)**: teken vorm → loslaten → capture met transparantie buiten de lasso
+- **Na capture:**
+  - Direct naar **clipboard**
+  - **Preview window** met knoppen: **Save / Edit / Dismiss**
+  - Preview venster kun je slepen door overal te klikken (behalve op knoppen)
 
-Known quirks:
-Photoshop CS6: capture bitmap moet bottom-up (biHeight positief), anders vertical flip.
+## Save (formaat + folder)
 
-Eerste bruikbare versie: 18 februari 2026
+- **Default formaat:** PNG
+- **Linksklik op Save**
+  - Region/Window/Monitor: bewaart in het **laatst gekozen formaat** (PNG/JPEG/BMP)
+  - Freestyle: bewaart **altijd PNG** (vanwege transparantie)
+- **Rechtsklik op Save** (geen dialoog)
+  - **Save format → PNG / JPEG / BMP**
+  - **Open capture folder**
+  - **Choose capture folder…**
+  - **Auto-dismiss after Save** (preview sluit automatisch na opslaan)
 
-wensen:
-aanpassen van overlay in menu (kleur, grootte, ...)
-in meerdere formaten kunnen bewaren (png, jpg, bmp, ...)
-resize preview
-bij keuze edit-programma, daarin direct openen
+## Edit
+
+- **Linksklik Edit:** opent de huidige capture via een **temp-bestand** (dus nooit per ongeluk een oude file).
+- **Rechtsklik Edit:**
+  - **Open in (last program)**
+  - **Choose program…** (kies vaste editor)
+
+## Settings (persistent)
+
+Bestand:
+- `%LOCALAPPDATA%\snip-lite\settings.ini`
+
+Belangrijkste keys:
+
+`[General]`
+- `SaveDir=...`
+- `SaveFormat=0/1/2`  (0=PNG, 1=JPEG, 2=BMP)
+- `AutoDismiss=0/1`
+- `EditorExe=...`
+- `LastSavedFile=...`
+- `Mode=0/1/2/3` (0=Region, 1=Window, 2=Monitor, 3=Freestyle)
+
+`[Preview]`
+- `X=`, `Y=`, `W=`, `H=` (positie/grootte preview)
+
+## Build & run
+
+### Vereisten
+- Windows 10/11
+- Visual Studio met “Desktop development with C++”
+- CMake 3.23+
+
+### Build (PowerShell)
+```powershell
+cmake --preset vs2026-x64
+cmake --build --preset debug
 
