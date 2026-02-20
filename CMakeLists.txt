@@ -15,6 +15,8 @@ target_link_libraries(snip_lite PRIVATE
   gdi32
   shell32
   ole32
+  dwmapi
+
 )
 
 if (MSVC)

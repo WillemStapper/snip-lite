@@ -19,8 +19,10 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
-#include <wincodec.h>    // PNG/JPEG via WIC
+#include <wincodec.h>     // PNG/JPEG via WIC
 #pragma comment(lib, "windowscodecs.lib")
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
 
 // -----------------------------
 // Hotkey
@@ -84,6 +86,7 @@ static bool g_lassoSelecting = false;
 static std::vector<POINT> g_lassoPtsClient;
 static RECT g_lassoBoundsClient{};
 static bool g_captureHasAlpha = false;   // straks voor preview + save
+
 // -----------------------------
 // Save format (persistent)
 // -----------------------------
@@ -307,6 +310,14 @@ static bool IsSnipLiteWindow(HWND h) {
 
 static bool GetWindowRectSafe(HWND h, RECT& out) {
     if (!h) return false;
+
+    // 1) Probeer “extended frame bounds” (meestal exact, zonder aura)
+    HRESULT hr = DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &out, sizeof(out));
+    if (SUCCEEDED(hr) && (out.right > out.left) && (out.bottom > out.top)) {
+        return true;
+    }
+
+    // 2) Fallback
     if (!GetWindowRect(h, &out)) return false;
     return (out.right > out.left) && (out.bottom > out.top);
 }
@@ -328,15 +339,44 @@ static bool IsCandidateCaptureWindow(HWND h) {
 }
 
 static HWND PickTopWindowAtPoint(POINT ptScreen, RECT& outRectScreen) {
-    for (HWND h = GetTopWindow(nullptr); h; h = GetWindow(h, GW_HWNDNEXT)) {
-        if (!IsCandidateCaptureWindow(h)) continue;
-        RECT rc{};
-        if (!GetWindowRectSafe(h, rc)) continue;
-        if (PtInRectEx(rc, ptScreen)) {
-            outRectScreen = rc;
-            return h;
+    RECT vs = VirtualScreenRect();
+
+    // monitor onder de cursor (belangrijk bij multi-monitor met verschillende hoogtes)
+    RECT monRc = vs;
+    HMONITOR mon = MonitorFromPoint(ptScreen, MONITOR_DEFAULTTONEAREST);
+    if (mon) {
+        MONITORINFO mi{};
+        mi.cbSize = sizeof(mi);
+        if (GetMonitorInfoW(mon, &mi)) {
+            monRc = mi.rcMonitor; // let op: niet rcWork
         }
     }
+
+    for (HWND h = GetTopWindow(nullptr); h; h = GetWindow(h, GW_HWNDNEXT)) {
+        if (!IsCandidateCaptureWindow(h)) continue;
+
+        RECT rc{};
+        if (!GetWindowRectSafe(h, rc)) continue;
+
+        if (!PtInRectEx(rc, ptScreen)) continue;
+
+        // 1) clip naar virtual screen
+        RECT clipped{}, tmp{};
+        clipped = rc;
+        if (IntersectRect(&tmp, &clipped, &vs)) clipped = tmp;
+
+        // 2) clip naar monitor onder cursor (voorkomt zwarte balken in “lege” gebieden)
+        if (IntersectRect(&tmp, &clipped, &monRc)) clipped = tmp;
+
+        // sanity
+        if ((clipped.right - clipped.left) < 5 || (clipped.bottom - clipped.top) < 5) {
+            continue;
+        }
+
+        outRectScreen = clipped;
+        return h;
+    }
+
     return nullptr;
 }
 
@@ -1470,9 +1510,36 @@ static void DestroyOverlay() {
     }
 }
 
-static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr) {
+static void BringWindowToFrontForCapture(HWND h) {
+    if (!h) return;
+
+    // pak root window
+    h = GetAncestor(h, GA_ROOT);
+    if (!h) return;
+
+    // als geminimaliseerd -> herstellen
+    if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+
+    // naar top in z-order (boven normale windows)
+    SetWindowPos(h, HWND_TOP, 0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+
+    // activeer (meestal toegestaan omdat jij net klikte in jouw overlay)
+    SetForegroundWindow(h);
+
+    // even tijd geven om te repainten
+    Sleep(80);
+    GdiFlush();
+}
+
+static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr, HWND bringHwnd = nullptr) {
     ShowWindow(hwndOverlay, SW_HIDE);
     Sleep(20);
+
+    if (bringHwnd) {
+        BringWindowToFrontForCapture(bringHwnd);
+    }
+
     GdiFlush();
 
     FreeCapture();
@@ -1692,8 +1759,8 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             sr.bottom = ow.top + g_selRectClient.bottom;
 
             g_tempEditFile.clear();
-            CaptureScreenRectAndShowPreview(hwnd, sr);
-            return 0;
+        CaptureScreenRectAndShowPreview(hwnd, sr);
+        return 0;
         }
 
         // Window/Monitor/Freestyle: capture on click
@@ -1702,12 +1769,13 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         RECT sr{};
         bool have = false;
+        HWND picked = nullptr;
 
         if (g_mode == Mode::Window) {
-            HWND h = PickTopWindowAtPoint(pt, sr);
-            have = (h != nullptr);
+            picked = PickTopWindowAtPoint(pt, sr);
+            have = (picked != nullptr);
         }
-        else if (g_mode == Mode::Monitor) {
+else if (g_mode == Mode::Monitor) {
             have = GetMonitorRectAtPoint(pt, sr);
         }
         else {
@@ -1726,7 +1794,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         g_tempEditFile.clear();
-        CaptureScreenRectAndShowPreview(hwnd, sr);
+        CaptureScreenRectAndShowPreview(hwnd, sr, picked);
         return 0;
     }
 

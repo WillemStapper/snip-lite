@@ -9,6 +9,9 @@
 /*.vcxproj*
 /CMakeSettings.json
 
+# Backup
+/src/mainBackup.cpp
+
 # CMake user files
 CMakeUserPresets.json
 
