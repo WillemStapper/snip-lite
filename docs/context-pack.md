@@ -72,18 +72,22 @@
   - [X] PNG export (WIC) als alternatief voor BMP
   - [X] Window/Monitor mode implementeren
 - ===>> 7
-	- [ ] Freestyle smoothing
+	- [X] Freestyle smoothing
 	- [X] Window picking verfijnen
 	- [-] Hotkeys + instellingen UI ??
-	- [ ] Overlay in kleur aanpassen
-	- [ ] Pointer duidelijker in beeld brengen
-	- [ ] Selectie bij 'Region' door oplichten van geselecteerd gebied (zoals bij Window/Monitor)
+	- [-] Overlay in kleur aanpassen
+	- [X] Pointer duidelijker in beeld brengen
+	- [X] Selectie bij 'Region' door oplichten van geselecteerd gebied (zoals bij Window/Monitor)
 - ===>> 8
 	- [ ] Nieuw Mode toevoegen : Text (met OCR)
 	- [ ] HotKey weghalen , starten via icoon
 	- [ ] in system tray (of beide opties)
+	- [ ] Freestyle met toets wordt onregelmatige Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
+- <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)
+- <21-02-2026>: Pointer beter zichtbaar
+- <21-02-2026>: Freestyle smooth
 - <21-02-2026>: Edit/Choose program opent nu direct huidige selectie (temp-bestand)
 - <19-02-2026>: Window/Monitor mode implementeren
 - <19-02-2026>: Freestyle (Lasso) toegevoegd

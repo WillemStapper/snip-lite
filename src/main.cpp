@@ -63,6 +63,9 @@ static bool  g_hasSelection = false;
 static POINT g_selStart{};
 static POINT g_selCur{};
 static RECT  g_selRectClient{};
+static bool  g_cursorValid = false;
+static POINT g_cursorPt{ 0,0 };
+static bool  g_trackLeave = false;
 
 // -----------------------------
 // Hover state (Window/Monitor)
@@ -913,6 +916,48 @@ static bool SaveBitmapFile(HBITMAP hbmp, const std::wstring& filePath, SaveForma
     }
 }
 
+static std::vector<POINT> LassoSmoothClosed_Chaikin(std::vector<POINT> pts, int iterations)
+{
+    if (pts.size() < 3 || iterations <= 0) return pts;
+
+    // verwijder dubbele opeenvolgende punten
+    {
+        std::vector<POINT> clean;
+        clean.reserve(pts.size());
+        for (auto p : pts) {
+            if (clean.empty() || p.x != clean.back().x || p.y != clean.back().y) clean.push_back(p);
+        }
+        pts.swap(clean);
+    }
+    if (pts.size() < 3) return pts;
+
+    for (int it = 0; it < iterations; ++it) {
+        // rem: voorkom explosie
+        if (pts.size() > 4096) break;
+
+        std::vector<POINT> out;
+        out.reserve(pts.size() * 2);
+
+        const int n = (int)pts.size();
+        for (int i = 0; i < n; ++i) {
+            const POINT p0 = pts[i];
+            const POINT p1 = pts[(i + 1) % n];
+
+            // Q = 0.75 p0 + 0.25 p1
+            POINT q{ (3 * p0.x + p1.x) / 4, (3 * p0.y + p1.y) / 4 };
+            // R = 0.25 p0 + 0.75 p1
+            POINT r{ (p0.x + 3 * p1.x) / 4, (p0.y + 3 * p1.y) / 4 };
+
+            out.push_back(q);
+            out.push_back(r);
+        }
+
+        pts.swap(out);
+    }
+
+    return pts;
+}
+
 static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClient, const RECT& boundsClient) {
     if (!hbmp || ptsClient.size() < 3) return false;
 
@@ -941,6 +986,14 @@ static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClien
         // bewaar originele rij (we gaan buitengebied leegmaken)
         std::vector<BYTE> backup((size_t)w * 4);
         std::memcpy(backup.data(), row, (size_t)w * 4);
+
+        // behoud overal RGB (dus geen zwarte rand later)
+        std::memcpy(row, backup.data(), (size_t)w * 4);
+
+        // zet overal alpha = 0 (transparant)
+        for (int x = 0; x < w; ++x) {
+            row[x * 4 + 3] = 0;
+        }
 
         // maak hele rij transparant
         std::memset(row, 0, (size_t)w * 4);
@@ -985,6 +1038,60 @@ static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClien
     }
 
     return true;
+}
+
+static void FeatherAlpha3x3(HBITMAP hbmp, int passes)
+{
+    if (!hbmp || passes <= 0) return;
+
+    DIBSECTION ds{};
+    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || !ds.dsBm.bmBits) return;
+
+    const int w = ds.dsBmih.biWidth;
+    const int h = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
+    const int stride = ds.dsBm.bmWidthBytes;
+
+    BYTE* bits = (BYTE*)ds.dsBm.bmBits;
+
+    std::vector<uint8_t> a((size_t)w * h);
+    auto readAlpha = [&]() {
+        for (int y = 0; y < h; ++y) {
+            BYTE* row = bits + (size_t)(h - 1 - y) * (size_t)stride;
+            for (int x = 0; x < w; ++x) a[(size_t)y * w + x] = row[x * 4 + 3];
+        }
+        };
+    auto writeAlpha = [&](const std::vector<uint8_t>& src) {
+        for (int y = 0; y < h; ++y) {
+            BYTE* row = bits + (size_t)(h - 1 - y) * (size_t)stride;
+            for (int x = 0; x < w; ++x) row[x * 4 + 3] = src[(size_t)y * w + x];
+        }
+        };
+
+    readAlpha();
+
+    std::vector<uint8_t> tmp((size_t)w * h);
+
+    for (int p = 0; p < passes; ++p) {
+        for (int y = 0; y < h; ++y) {
+            for (int x = 0; x < w; ++x) {
+                int sum = 0, cnt = 0;
+                for (int dy = -1; dy <= 1; ++dy) {
+                    int yy = y + dy;
+                    if (yy < 0 || yy >= h) continue;
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        int xx = x + dx;
+                        if (xx < 0 || xx >= w) continue;
+                        sum += a[(size_t)yy * w + xx];
+                        cnt++;
+                    }
+                }
+                tmp[(size_t)y * w + x] = (uint8_t)(sum / cnt);
+            }
+        }
+        a.swap(tmp);
+    }
+
+    writeAlpha(a);
 }
 
 static bool OpenInEditor(const std::wstring& editorExe, const std::wstring& filePath) {
@@ -1514,6 +1621,39 @@ static void CreatePreviewWindow() {
 // =========================================================
 // Overlay
 // =========================================================
+static RECT CursorDirtyRect(POINT p) {
+    const int L = 14;     // lengte van crosshair
+    const int pad = 6;    // extra marge voor dikke lijn
+    RECT rc{ p.x - L - pad, p.y - L - pad, p.x + L + pad + 1, p.y + L + pad + 1 };
+    return rc;
+}
+
+static void DrawOutlinedCrosshair(HDC hdc, int x, int y)
+{
+    const int L = 14;
+
+    // zwarte "rand" (dikker)
+    HPEN penB = CreatePen(PS_SOLID, 3, RGB(0, 0, 0));
+    HGDIOBJ oldPen = SelectObject(hdc, penB);
+
+    MoveToEx(hdc, x - L, y, nullptr); LineTo(hdc, x + L + 1, y);
+    MoveToEx(hdc, x, y - L, nullptr); LineTo(hdc, x, y + L + 1);
+
+    // witte kern (dun)
+    HPEN penW = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+    SelectObject(hdc, penW);
+
+    MoveToEx(hdc, x - L, y, nullptr); LineTo(hdc, x + L + 1, y);
+    MoveToEx(hdc, x, y - L, nullptr); LineTo(hdc, x, y + L + 1);
+
+    // klein centrum-puntje (extra zichtbaar)
+    SetPixel(hdc, x, y, RGB(255, 255, 255));
+
+    SelectObject(hdc, oldPen);
+    DeleteObject(penB);
+    DeleteObject(penW);
+}
+
 static void LassoReset() {
     g_lassoSelecting = false;
     g_lassoPtsClient.clear();
@@ -1607,8 +1747,17 @@ static void LassoAddPoint(POINT p) {
 static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
-        return TRUE;
+        if ((HWND)wParam == hwnd && LOWORD(lParam) == HTCLIENT) {
+            SetCursor(nullptr); // cursor verbergen
+            return TRUE;
+        }
+        break;
+
+    case WM_MOUSELEAVE:
+        g_cursorValid = false;
+        g_trackLeave = false;
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
 
     case WM_RBUTTONUP:
         if (g_selecting) return 0;
@@ -1642,6 +1791,30 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_MOUSEMOVE: {
+        POINT newPt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+        RECT r1{};
+        if (g_cursorValid) r1 = CursorDirtyRect(g_cursorPt);
+
+        g_cursorPt = newPt;
+        g_cursorValid = true;
+
+        RECT r2 = CursorDirtyRect(g_cursorPt);
+
+        // mouse-leave aanzetten (zodat cursor verdwijnt als je overlay verlaat)
+        if (!g_trackLeave) {
+            TRACKMOUSEEVENT tme{};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+            g_trackLeave = true;
+        }
+
+        // repaint alleen oude + nieuwe cursor-plek
+        InvalidateRect(hwnd, &r2, FALSE);
+        if (r1.right > r1.left) InvalidateRect(hwnd, &r1, FALSE);
+
         if (g_mode == Mode::Freestyle && g_lassoSelecting) {
             POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             LassoAddPoint(p);
@@ -1731,13 +1904,15 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             }
 
             // mask: alpha buiten lasso = 0
-            if (!ApplyLassoAlphaMask(g_captureBmp, g_lassoPtsClient, b)) {
+            auto smoothPts = LassoSmoothClosed_Chaikin(g_lassoPtsClient, 2);
+            if (!ApplyLassoAlphaMask(g_captureBmp, smoothPts, b)) {
                 MessageBeep(MB_ICONERROR);
                 ShowWindow(hwnd, SW_SHOW);
                 InvalidateRect(hwnd, nullptr, TRUE);
                 return 0;
             }
             g_captureHasAlpha = true;
+            FeatherAlpha3x3(g_captureBmp, 1);  // 1 = subtiel; 2 = zachter
 
             bool clipOk = CopyBitmapToClipboardAlphaV5(g_captureBmp);
 
@@ -1887,14 +2062,33 @@ else if (g_mode == Mode::Monitor) {
             }
         }
 
-        if (g_selecting) {
-            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            Rectangle(hdc, g_selRectClient.left, g_selRectClient.top, g_selRectClient.right, g_selRectClient.bottom);
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
-            DeleteObject(pen);
+        if (g_mode == Mode::Region && g_selecting) {
+
+            // clamp naar client
+            RECT client{};
+            GetClientRect(hwnd, &client);
+
+            RECT s = g_selRectClient;
+            RECT ss{};
+            if (IntersectRect(&ss, &s, &client)) {
+
+                // (A) Oplichten: vulling binnen selectie
+                // Kies een kleur die duidelijk lichter is dan jouw overlay-achtergrond
+                HBRUSH lit = CreateSolidBrush(RGB(60, 60, 60));
+                FillRect(hdc, &ss, lit);
+                DeleteObject(lit);
+
+                // (B) Witte outline zoals nu
+                HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+                HGDIOBJ oldPen = SelectObject(hdc, pen);
+                HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+                Rectangle(hdc, ss.left, ss.top, ss.right, ss.bottom);
+
+                SelectObject(hdc, oldBrush);
+                SelectObject(hdc, oldPen);
+                DeleteObject(pen);
+            }
         }
         else if (g_hoverValid) {
             HPEN pen = CreatePen(PS_SOLID, 2, RGB(100, 200, 255));
@@ -1904,6 +2098,9 @@ else if (g_mode == Mode::Monitor) {
             SelectObject(hdc, oldBrush);
             SelectObject(hdc, oldPen);
             DeleteObject(pen);
+        }
+        if (g_cursorValid) {
+            DrawOutlinedCrosshair(hdc, g_cursorPt.x, g_cursorPt.y);
         }
 
         EndPaint(hwnd, &ps);
