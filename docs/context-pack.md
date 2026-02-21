@@ -73,15 +73,18 @@
   - [X] Window/Monitor mode implementeren
 - ===>> 7
 	- [ ] Freestyle smoothing
-	- [ ] Window picking verfijnen
-	- [ ] Hotkeys + instellingen UI ??
+	- [X] Window picking verfijnen
+	- [-] Hotkeys + instellingen UI ??
 	- [ ] Overlay in kleur aanpassen
 	- [ ] Pointer duidelijker in beeld brengen
-
-## 10) Open vragen
-- Welke standaard editor wil je als fallback (als EditorExe leeg is)?
+	- [ ] Selectie bij 'Region' door oplichten van geselecteerd gebied (zoals bij Window/Monitor)
+- ===>> 8
+	- [ ] Nieuw Mode toevoegen : Text (met OCR)
+	- [ ] HotKey weghalen , starten via icoon
+	- [ ] in system tray (of beide opties)
 
 ## 11) Mini-log (laatste wijzigingen)
+- <21-02-2026>: Edit/Choose program opent nu direct huidige selectie (temp-bestand)
 - <19-02-2026>: Window/Monitor mode implementeren
 - <19-02-2026>: Freestyle (Lasso) toegevoegd
 - <19-02-2026>: PNG export via WIC toegevoegd plus keuze in JPG en BMP

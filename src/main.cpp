@@ -308,6 +308,25 @@ static bool IsSnipLiteWindow(HWND h) {
     return (h == g_hwndOverlay) || (h == g_hwndPreview) || (h == g_hwndMsg);
 }
 
+static bool IsDesktopOrShellWindow(HWND h) {
+    if (!h) return true;
+
+    if (h == GetDesktopWindow()) return true;
+
+    HWND shell = GetShellWindow();
+    if (shell && h == shell) return true;
+
+    wchar_t cls[128]{};
+    if (GetClassNameW(h, cls, _countof(cls)) > 0) {
+        if (lstrcmpiW(cls, L"Progman") == 0) return true;       // Desktop host
+        if (lstrcmpiW(cls, L"WorkerW") == 0) return true;       // Desktop wallpaper/worker window
+        if (lstrcmpiW(cls, L"Shell_TrayWnd") == 0) return true; // Taskbar
+        if (lstrcmpiW(cls, L"Shell_SecondaryTrayWnd") == 0) return true; // Taskbar (2e monitor)
+    }
+
+    return false;
+}
+
 static bool GetWindowRectSafe(HWND h, RECT& out) {
     if (!h) return false;
 
@@ -325,6 +344,7 @@ static bool GetWindowRectSafe(HWND h, RECT& out) {
 static bool IsCandidateCaptureWindow(HWND h) {
     if (!h) return false;
     if (IsSnipLiteWindow(h)) return false;
+    if (IsDesktopOrShellWindow(h)) return false;
     if (!IsWindowVisible(h)) return false;
     if (IsIconic(h)) return false;
 
@@ -1108,7 +1128,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         // Als wij sleepgebied teruggeven als HTCAPTION -> maak cursor een handje
         if (ht == HTCAPTION) {
-            SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
             return TRUE;
         }
 
@@ -1119,7 +1139,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             ScreenToClient(hwnd, &pt);
 
             if (PtInRectEx(g_btnSave, pt) || PtInRectEx(g_btnEdit, pt) || PtInRectEx(g_btnDismiss, pt)) {
-                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
 
@@ -1264,17 +1284,20 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         case 2011: g_saveFormat = SaveFormat::Jpeg; SaveSettings(); SetStatus(hwnd, L"Format: JPEG"); return 0;
         case 2012: g_saveFormat = SaveFormat::Bmp;  SaveSettings(); SetStatus(hwnd, L"Format: BMP");  return 0;
 
-        case 2102: { // choose program
+        case 2102: { // choose program (en meteen openen)
             PreviewDropTopmost(hwnd);
+
             std::wstring exe;
-            if (PickExe(hwnd, exe)) {
-                g_editorExe = exe;
-                SaveSettings();
-                SetStatus(hwnd, L"Program set");
-            }
-            else {
+            if (!PickExe(hwnd, exe)) {
                 SetStatus(hwnd, L"Canceled");
+                return 0;
             }
+
+            g_editorExe = exe;
+            SaveSettings();
+
+            // Direct dezelfde actie uitvoeren als "Open in (last program)"
+            SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(2101, 0), 0);
             return 0;
         }
         case 2101: { // Open in (last program) - voorkeur: huidige capture
