@@ -80,11 +80,12 @@
 	- [X] Selectie bij 'Region' door oplichten van geselecteerd gebied (zoals bij Window/Monitor)
 - ===>> 8
 	- [ ] Nieuw Mode toevoegen : Text (met OCR)
-	- [ ] HotKey weghalen , starten via icoon
-	- [ ] in system tray (of beide opties)
+	- [-] HotKey weghalen , starten via icoon
+	- [X] in system tray (of beide opties)
 	- [ ] Freestyle met toets wordt onregelmatige Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
+- <21-02-2026>: Tray-icoon toegevoegd
 - <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)
 - <21-02-2026>: Pointer beter zichtbaar
 - <21-02-2026>: Freestyle smooth

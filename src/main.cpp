@@ -1,5 +1,4 @@
 // snip-lite main.cpp
-// ===>> 4: settings persistence + "Open in..." + preview window position persistence
 //
 // Opslag:
 //   %LOCALAPPDATA%\snip-lite\settings.ini
@@ -23,6 +22,7 @@
 #pragma comment(lib, "windowscodecs.lib")
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
+#include <strsafe.h>
 
 // -----------------------------
 // Hotkey
@@ -46,6 +46,22 @@ static const wchar_t* ModeText(Mode m) {
     default:            return L"Mode: ?";
     }
 }
+
+// -----------------------------
+// Tray
+// -----------------------------
+static constexpr UINT WM_TRAY = WM_APP + 10;
+static constexpr UINT TRAY_ID = 1;
+
+static constexpr UINT TRAY_CAP_REGION = 4001;
+static constexpr UINT TRAY_CAP_WINDOW = 4002;
+static constexpr UINT TRAY_CAP_MONITOR = 4003;
+static constexpr UINT TRAY_CAP_FREE = 4004;
+static constexpr UINT TRAY_EXIT = 4099;
+
+static NOTIFYICONDATAW g_nid{};
+static bool g_trayAdded = false;
+static bool g_hotkeyOk = false;
 
 // -----------------------------
 // Globals (windows)
@@ -2150,6 +2166,55 @@ static void CreateOverlay() {
 // =========================================================
 // Message-only window (hotkey)
 // =========================================================
+static void StartCapture(Mode m) {
+    g_mode = m;
+    if (g_hwndPreview) DestroyPreview();
+    if (g_hwndOverlay) DestroyOverlay();
+    CreateOverlay();
+}
+
+static void TrayAdd(HWND hwnd) {
+    if (g_trayAdded) return;
+
+    ZeroMemory(&g_nid, sizeof(g_nid));
+    g_nid.cbSize = sizeof(g_nid);
+    g_nid.hWnd = hwnd;
+    g_nid.uID = TRAY_ID;
+    g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    g_nid.uCallbackMessage = WM_TRAY;
+    g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    HRESULT hr = StringCchCopyW(g_nid.szTip, _countof(g_nid.szTip), L"snip-lite");
+    if (FAILED(hr)) g_nid.szTip[0] = 0;
+
+    g_trayAdded = Shell_NotifyIconW(NIM_ADD, &g_nid) != FALSE;
+}
+
+static void TrayRemove() {
+    if (!g_trayAdded) return;
+    Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    g_trayAdded = false;
+}
+
+static void TrayShowMenu(HWND hwnd) {
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, TRAY_CAP_REGION, L"Capture: Region");
+    AppendMenuW(menu, MF_STRING, TRAY_CAP_WINDOW, L"Capture: Window");
+    AppendMenuW(menu, MF_STRING, TRAY_CAP_MONITOR, L"Capture: Monitor");
+    AppendMenuW(menu, MF_STRING, TRAY_CAP_FREE, L"Capture: Freestyle");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, TRAY_EXIT, L"Exit");
+
+    POINT pt{};
+    GetCursorPos(&pt);
+    SetForegroundWindow(hwnd);
+
+    UINT cmd = TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, hwnd, nullptr);
+    DestroyMenu(menu);
+
+    if (cmd) SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
+    PostMessageW(hwnd, WM_NULL, 0, 0);
+}
+
 static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_HOTKEY:
@@ -2163,15 +2228,44 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             else CreateOverlay();
         }
         return 0;
+    
+    case WM_CREATE:
+        TrayAdd(hwnd);
+        return 0;
 
     case WM_DESTROY:
-        UnregisterHotKey(hwnd, HOTKEY_ID);
+        if (g_hotkeyOk) UnregisterHotKey(hwnd, HOTKEY_ID);
+        TrayRemove();
         SaveSettings();       // laatste flush
         DestroyPreview();
         DestroyOverlay();
         PostQuitMessage(0);
         return 0;
+
+    case WM_TRAY:
+        if (wParam == TRAY_ID) {
+            if (lParam == WM_RBUTTONUP) {
+                TrayShowMenu(hwnd);
+                return 0;
+            }
+            if (lParam == WM_LBUTTONDBLCLK) {
+                StartCapture(Mode::Region);
+                return 0;
+            }
+        }
+        break;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam)) {
+        case TRAY_CAP_REGION:  StartCapture(Mode::Region);  return 0;
+        case TRAY_CAP_WINDOW:  StartCapture(Mode::Window);  return 0;
+        case TRAY_CAP_MONITOR: StartCapture(Mode::Monitor); return 0;
+        case TRAY_CAP_FREE:    StartCapture(Mode::Freestyle); return 0;
+        case TRAY_EXIT:        DestroyWindow(hwnd); return 0;
+        }
+        break;
     }
+
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
@@ -2205,10 +2299,11 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
         0, 0, 0, 0,
         HWND_MESSAGE, nullptr, hInst, nullptr
     );
+    TrayAdd(g_hwndMsg);
 
-    if (!RegisterHotKey(g_hwndMsg, HOTKEY_ID, HOTKEY_MOD, HOTKEY_VK)) {
-        MessageBoxW(nullptr, L"Hotkey (Ctrl+Alt+S) is al in gebruik.", L"snip-lite", MB_ICONERROR);
-        return 1;
+    g_hotkeyOk = RegisterHotKey(g_hwndMsg, HOTKEY_ID, HOTKEY_MOD, HOTKEY_VK) != FALSE;
+    if (!g_hotkeyOk) {
+        MessageBoxW(nullptr, L"Hotkey (Ctrl+Alt+S) is al in gebruik.\nTray icon werkt wel.", L"snip-lite", MB_ICONWARNING);
     }
 
     MSG m{};
