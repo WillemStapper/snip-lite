@@ -65,10 +65,12 @@
 
 ## 9) Volgende stap (exact)
 - ===>> 8
-	- [ ] Nieuw Mode toevoegen : Text (met OCR)
-	- [X ] Nieuwe capture Mode: Polygon
+	- [ ] OCR- functie toevoegen (via Tesseract of Windows OCR API)
+	- [X] Nieuwe capture Mode: Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
+
+- <23-02-2026>: Polygon mode toegevoegd (klik voor punten, dubbelklik om te sluiten)
 - <22-02-2026>: Bugs Tray-icoon gefixt
 - <21-02-2026>: Tray-icoon toegevoegd
 - <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)

@@ -37,7 +37,6 @@ static constexpr UINT HOTKEY_VK = 'S';            // Ctrl+Alt+S
 enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3, Polygon = 4 };
 static Mode g_mode = Mode::Region;
 static Mode g_lastMode = Mode::Region; // onthoudt de laatst gekozen mode (tray/overlay)
-
 static const wchar_t* ModeText(Mode m) {
     switch (m) {
     case Mode::Region:  return L"Mode: Region";
@@ -47,6 +46,31 @@ static const wchar_t* ModeText(Mode m) {
     case Mode::Polygon: return L"Mode: Polygon";
     default:            return L"Mode: ?";
     }
+}
+
+// -----------------------------
+// Single Instance
+// -----------------------------
+static HANDLE g_hSingleInstanceMutex = nullptr;
+static void InitDpiAwareness() {
+    // Probeer Per-Monitor V2 (Windows 10+). Fallback: oudere DPI-aware.
+    HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+    if (hUser32) {
+        using Fn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        auto p = (Fn)GetProcAddress(hUser32, "SetProcessDpiAwarenessContext");
+        if (p) {
+            p(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+            return;
+        }
+    }
+    // Oude fallback (best effort)
+    SetProcessDPIAware();
+}
+static bool EnsureSingleInstance() {
+    // Local = per ingelogde Windows sessie
+    g_hSingleInstanceMutex = CreateMutexW(nullptr, TRUE, L"Local\\SnipLite_SingleInstance");
+    if (!g_hSingleInstanceMutex) return true; // fail-open: liever starten dan blokkeren
+    return (GetLastError() != ERROR_ALREADY_EXISTS);
 }
 
 // -----------------------------
@@ -2588,6 +2612,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
     _In_ PWSTR pCmdLine,
     _In_ int nCmdShow) {
     g_hInst = hInst;
+
+    InitDpiAwareness();
+    if (!EnsureSingleInstance()) {
+        // Er draait al een instance: stilletjes stoppen (geen extra tray icon / hotkey-conflict)
+        return 0;
+    }
+
     UNREFERENCED_PARAMETER(hPrevInst);
     UNREFERENCED_PARAMETER(pCmdLine);
     UNREFERENCED_PARAMETER(nCmdShow);
@@ -2621,6 +2652,11 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
     while (GetMessageW(&m, nullptr, 0, 0)) {
         TranslateMessage(&m);
         DispatchMessageW(&m);
+    }
+
+    if (g_hSingleInstanceMutex) {
+        CloseHandle(g_hSingleInstanceMutex);
+        g_hSingleInstanceMutex = nullptr;
     }
     return 0;
 }
