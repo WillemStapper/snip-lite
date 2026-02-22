@@ -34,7 +34,7 @@ static constexpr UINT HOTKEY_VK = 'S';            // Ctrl+Alt+S
 // -----------------------------
 // Modes
 // -----------------------------
-enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3 };
+enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3, Polygon = 4 };
 static Mode g_mode = Mode::Region;
 static Mode g_lastMode = Mode::Region; // onthoudt de laatst gekozen mode (tray/overlay)
 
@@ -44,6 +44,7 @@ static const wchar_t* ModeText(Mode m) {
     case Mode::Window:  return L"Mode: Window";
     case Mode::Monitor: return L"Mode: Monitor";
 	case Mode::Freestyle: return L"Mode: Freestyle";
+    case Mode::Polygon: return L"Mode: Polygon";
     default:            return L"Mode: ?";
     }
 }
@@ -58,6 +59,7 @@ static constexpr UINT TRAY_CAP_REGION = 4001;
 static constexpr UINT TRAY_CAP_WINDOW = 4002;
 static constexpr UINT TRAY_CAP_MONITOR = 4003;
 static constexpr UINT TRAY_CAP_FREE = 4004;
+static constexpr UINT TRAY_CAP_POLY = 4005;
 static constexpr UINT TRAY_EXIT = 4099;
 
 static NOTIFYICONDATAW g_nid{};
@@ -105,6 +107,14 @@ static int     g_captureH = 0;
 static bool g_lassoSelecting = false;
 static std::vector<POINT> g_lassoPtsClient;
 static RECT g_lassoBoundsClient{};
+
+// Polygon state
+static bool g_polySelecting = false;
+static std::vector<POINT> g_polyPtsClient;
+static RECT g_polyBoundsClient{};
+static POINT g_polyHoverClient{};
+static bool g_polyHoverValid = false;
+
 static bool g_captureHasAlpha = false;   // straks voor preview + save
 
 // -----------------------------
@@ -257,7 +267,7 @@ static void LoadSettings() {
 
     int m = IniReadInt(L"General", L"Mode", 0);
     if (m < 0) m = 0;
-    if (m > 3) m = 3;
+    if (m > 4) m = 4;
     g_mode = (Mode)m;
     // na het laden van Mode uit settings:
     g_lastMode = g_mode;
@@ -1143,6 +1153,7 @@ static void ShowModeMenu(HWND hwndOwner) {
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Window ? MF_CHECKED : 0), 1002, L"Window");
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Monitor ? MF_CHECKED : 0), 1003, L"Monitor");
     AppendMenuW(menu, MF_STRING | (g_mode == Mode::Freestyle ? MF_CHECKED : 0), 1004, L"Freestyle (Lasso)");
+    AppendMenuW(menu, MF_STRING | (g_mode == Mode::Polygon ? MF_CHECKED : 0), 1005, L"Polygon");
 
     POINT pt{};
     GetCursorPos(&pt);
@@ -1678,9 +1689,95 @@ static void LassoReset() {
     g_lassoPtsClient.clear();
     ZeroMemory(&g_lassoBoundsClient, sizeof(g_lassoBoundsClient));
 }
+static bool IsShiftDown() {
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+}
+
+static bool NearPoint(POINT a, POINT b, int rPx) {
+    int dx = a.x - b.x;
+    int dy = a.y - b.y;
+    return (dx * dx + dy * dy) <= (rPx * rPx);
+}
+
+static POINT SnapPoint45(POINT origin, POINT raw) {
+    const double dx = (double)raw.x - (double)origin.x;
+    const double dy = (double)raw.y - (double)origin.y;
+
+    const double len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0) return raw;
+
+    const double ang = std::atan2(dy, dx);
+    const double PI = 3.14159265358979323846;
+    const double step = PI / 4.0; // 45 graden
+
+    const double snapped = std::round(ang / step) * step;
+
+    const double nx = std::cos(snapped) * len;
+    const double ny = std::sin(snapped) * len;
+
+    POINT out{
+        origin.x + (int)std::lround(nx),
+        origin.y + (int)std::lround(ny)
+    };
+    return out;
+}
+
+static void PolyReset() {
+    g_polySelecting = false;
+    g_polyPtsClient.clear();
+    ZeroMemory(&g_polyBoundsClient, sizeof(g_polyBoundsClient));
+    g_polyHoverValid = false;
+    g_polyHoverClient = { 0,0 };
+}
+
+static void PolyRecalcBounds() {
+    if (g_polyPtsClient.empty()) {
+        ZeroMemory(&g_polyBoundsClient, sizeof(g_polyBoundsClient));
+        return;
+    }
+    int minx = g_polyPtsClient[0].x, maxx = g_polyPtsClient[0].x;
+    int miny = g_polyPtsClient[0].y, maxy = g_polyPtsClient[0].y;
+
+    for (auto p : g_polyPtsClient) {
+        if (p.x < minx) minx = p.x;
+        if (p.x > maxx) maxx = p.x;
+        if (p.y < miny) miny = p.y;
+        if (p.y > maxy) maxy = p.y;
+    }
+    g_polyBoundsClient = { minx, miny, maxx + 1, maxy + 1 };
+}
+
+static void PolyAddPoint(POINT p) {
+    if (!g_polyPtsClient.empty()) {
+        POINT last = g_polyPtsClient.back();
+        if (last.x == p.x && last.y == p.y) return;
+    }
+    g_polyPtsClient.push_back(p);
+
+    if (g_polyPtsClient.size() == 1) {
+        g_polyBoundsClient = { p.x, p.y, p.x + 1, p.y + 1 };
+    }
+    else {
+        if (p.x < g_polyBoundsClient.left) g_polyBoundsClient.left = p.x;
+        if (p.y < g_polyBoundsClient.top) g_polyBoundsClient.top = p.y;
+        if (p.x + 1 > g_polyBoundsClient.right) g_polyBoundsClient.right = p.x + 1;
+        if (p.y + 1 > g_polyBoundsClient.bottom) g_polyBoundsClient.bottom = p.y + 1;
+    }
+}
+
+static void PolyUndoLast() {
+    if (g_polyPtsClient.empty()) return;
+    g_polyPtsClient.pop_back();
+    if (g_polyPtsClient.empty()) {
+        PolyReset();
+        return;
+    }
+    PolyRecalcBounds();
+}
 
 static void DestroyOverlay() {
     LassoReset();
+	PolyReset();
     g_selecting = false;
     g_hasSelection = false;
     ZeroMemory(&g_selRectClient, sizeof(g_selRectClient));
@@ -1763,6 +1860,82 @@ static void LassoAddPoint(POINT p) {
     }
 }
 
+static void PolygonFinalize(HWND hwnd) {
+    ReleaseCapture();
+    g_polySelecting = false;
+
+    if (g_polyPtsClient.size() < 3) {
+        MessageBeep(MB_ICONWARNING);
+        PolyReset();
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return;
+    }
+
+    // bounds iets ruimer
+    RECT b = g_polyBoundsClient;
+    b.left -= 2; b.top -= 2; b.right += 2; b.bottom += 2;
+
+    if ((b.right - b.left) < 5 || (b.bottom - b.top) < 5) {
+        MessageBeep(MB_ICONWARNING);
+        PolyReset();
+        InvalidateRect(hwnd, nullptr, TRUE);
+        return;
+    }
+
+    RECT ow{};
+    GetWindowRect(hwnd, &ow);
+
+    RECT sr{
+        ow.left + b.left,
+        ow.top + b.top,
+        ow.left + b.right,
+        ow.top + b.bottom
+    };
+
+    ShowWindow(hwnd, SW_HIDE);
+    Sleep(20);
+    GdiFlush();
+
+    FreeCapture();
+    g_captureHasAlpha = false;
+
+    bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
+    if (!capOk) {
+        MessageBeep(MB_ICONERROR);
+        ShowWindow(hwnd, SW_SHOW);
+        InvalidateRect(hwnd, nullptr, TRUE);
+        PolyReset();
+        return;
+    }
+
+    // mask: alpha buiten polygon = 0
+    if (!ApplyLassoAlphaMask(g_captureBmp, g_polyPtsClient, b)) {
+        MessageBeep(MB_ICONERROR);
+        ShowWindow(hwnd, SW_SHOW);
+        InvalidateRect(hwnd, nullptr, TRUE);
+        PolyReset();
+        return;
+    }
+
+    g_captureHasAlpha = true;
+    // Polygon is “strak”; feather optioneel. Zet op 1 als je het net iets zachter wil.
+    // FeatherAlpha3x3(g_captureBmp, 1);
+
+    bool clipOk = CopyBitmapToClipboardAlphaV5(g_captureBmp);
+    if (clipOk) {
+        DestroyOverlay();
+        g_tempEditFile.clear();
+        CreatePreviewWindow();
+    }
+    else {
+        MessageBeep(MB_ICONERROR);
+        ShowWindow(hwnd, SW_SHOW);
+        InvalidateRect(hwnd, nullptr, TRUE);
+    }
+
+    PolyReset();
+}
+
 static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_SETCURSOR:
@@ -1779,12 +1952,53 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_RBUTTONUP:
+        if (g_polySelecting) {
+            PolyUndoLast();
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+        if (g_lassoSelecting) return 0;
         if (g_selecting) return 0;
         ShowModeMenu(hwnd);
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
 
     case WM_LBUTTONDOWN:
+        if (g_mode == Mode::Polygon) {
+            SetFocus(hwnd);
+
+            POINT raw{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+
+            if (!g_polySelecting) {
+                SetCapture(hwnd);
+                PolyReset();
+                g_polySelecting = true;
+
+                g_polyHoverClient = raw;
+                g_polyHoverValid = true;
+
+                PolyAddPoint(raw);
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+
+            // bestaand polygon: bepaal klikpunt (Shift = snap 45° t.o.v. laatste punt)
+            POINT p = raw;
+            if (!g_polyPtsClient.empty() && IsShiftDown()) {
+                p = SnapPoint45(g_polyPtsClient.back(), raw);
+            }
+
+            // close door te klikken dichtbij het eerste punt
+            if (g_polyPtsClient.size() >= 3 && NearPoint(p, g_polyPtsClient.front(), 10)) {
+                PolygonFinalize(hwnd);
+                return 0;
+            }
+
+            PolyAddPoint(p);
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
         if (g_mode == Mode::Freestyle) {
             SetCapture(hwnd);
             LassoReset();
@@ -1834,6 +2048,21 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         InvalidateRect(hwnd, &r2, FALSE);
         if (r1.right > r1.left) InvalidateRect(hwnd, &r1, FALSE);
 
+        if (g_mode == Mode::Polygon && g_polySelecting) {
+            POINT raw{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            POINT h = raw;
+
+            if (!g_polyPtsClient.empty() && IsShiftDown()) {
+                h = SnapPoint45(g_polyPtsClient.back(), raw);
+            }
+
+            g_polyHoverClient = h;
+            g_polyHoverValid = true;
+
+            InvalidateRect(hwnd, nullptr, TRUE);
+            return 0;
+        }
+
         if (g_mode == Mode::Freestyle && g_lassoSelecting) {
             POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
             LassoAddPoint(p);
@@ -1875,6 +2104,9 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
 
     case WM_LBUTTONUP: {
+        if (g_mode == Mode::Polygon) {
+            return 0;
+        }
         if (g_mode == Mode::Freestyle && g_lassoSelecting) {
             ReleaseCapture();
             g_lassoSelecting = false;
@@ -2017,6 +2249,12 @@ else if (g_mode == Mode::Monitor) {
 
     case WM_KEYDOWN:
         if (wParam == VK_ESCAPE) {
+            if (g_polySelecting) {
+                PolyReset();
+                ReleaseCapture();
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
             if (g_lassoSelecting) {
                 LassoReset();
                 ReleaseCapture();
@@ -2034,6 +2272,19 @@ else if (g_mode == Mode::Monitor) {
             }
             return 0;
         }
+
+        if (g_mode == Mode::Polygon && g_polySelecting) {
+            if (wParam == VK_RETURN) {
+                PolygonFinalize(hwnd);
+                return 0;
+            }
+            if (wParam == VK_BACK) {
+                PolyUndoLast();
+                InvalidateRect(hwnd, nullptr, TRUE);
+                return 0;
+            }
+        }
+
         return 0;
 
     case WM_COMMAND:
@@ -2042,6 +2293,7 @@ else if (g_mode == Mode::Monitor) {
         case 1002: g_mode = g_lastMode = Mode::Window;    ClearHover(); SaveSettings(); break;
         case 1003: g_mode = g_lastMode = Mode::Monitor;   ClearHover(); SaveSettings(); break;
         case 1004: g_mode = g_lastMode = Mode::Freestyle; ClearHover(); SaveSettings(); break;
+        case 1005: g_mode = g_lastMode = Mode::Polygon;  ClearHover(); SaveSettings(); break;
         default: break;
         }
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -2079,6 +2331,42 @@ else if (g_mode == Mode::Monitor) {
                 SelectObject(hdc, oldPen);
                 DeleteObject(pen);
             }
+        }
+
+        if (g_mode == Mode::Polygon && (g_polySelecting || g_polyPtsClient.size() >= 1)) {
+            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+            HGDIOBJ oldPen = SelectObject(hdc, pen);
+            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+
+            // vaste edges
+            if (g_polyPtsClient.size() >= 2) {
+                Polyline(hdc, g_polyPtsClient.data(), (int)g_polyPtsClient.size());
+            }
+
+            // rubber-band (laatste punt -> hover), met “close hint” (hover -> eerste)
+            if (g_polySelecting && g_polyHoverValid && !g_polyPtsClient.empty()) {
+                POINT last = g_polyPtsClient.back();
+                MoveToEx(hdc, last.x, last.y, nullptr);
+                LineTo(hdc, g_polyHoverClient.x, g_polyHoverClient.y);
+
+                if (g_polyPtsClient.size() >= 3 && NearPoint(g_polyHoverClient, g_polyPtsClient.front(), 10)) {
+                    MoveToEx(hdc, g_polyHoverClient.x, g_polyHoverClient.y, nullptr);
+                    LineTo(hdc, g_polyPtsClient.front().x, g_polyPtsClient.front().y);
+                }
+            }
+
+            // vertices (kleine cirkels)
+            SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            constexpr int kVtxR = 3;
+            for (auto p : g_polyPtsClient) {
+                Ellipse(hdc,
+                    p.x - kVtxR, p.y - kVtxR,
+                    p.x + kVtxR + 1, p.y + kVtxR + 1);
+            }
+
+            SelectObject(hdc, oldBrush);
+            SelectObject(hdc, oldPen);
+            DeleteObject(pen);
         }
 
         if (g_mode == Mode::Region && g_selecting) {
@@ -2204,6 +2492,7 @@ static void TrayShowMenu(HWND hwnd) {
     AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Window ? MF_CHECKED : 0), TRAY_CAP_WINDOW, L"Capture: Window");
     AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Monitor ? MF_CHECKED : 0), TRAY_CAP_MONITOR, L"Capture: Monitor");
     AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Freestyle ? MF_CHECKED : 0), TRAY_CAP_FREE, L"Capture: Freestyle");
+    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Polygon ? MF_CHECKED : 0), TRAY_CAP_POLY, L"Capture: Polygon");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_EXIT, L"Exit");
 
@@ -2225,6 +2514,7 @@ static bool TryModeFromTrayCmd(UINT cmd, Mode& outMode)
     case TRAY_CAP_WINDOW:  outMode = Mode::Window;   return true;
     case TRAY_CAP_MONITOR: outMode = Mode::Monitor;  return true;
     case TRAY_CAP_FREE:    outMode = Mode::Freestyle; return true;
+    case TRAY_CAP_POLY:    outMode = Mode::Polygon;   return true;
     default: return false;
     }
 }

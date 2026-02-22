@@ -63,14 +63,10 @@
 - Sectie `[Preview]`
   - X=, Y=, W=, H=
 
-## 8) Bekende quirks / bugs
-- (optioneel) Als Edit soms een oud bestand opent: maak “Edit” altijd gebaseerd op **huidige capture** (temp-bestand), niet op `LastSavedFile`.
-
 ## 9) Volgende stap (exact)
-
 - ===>> 8
 	- [ ] Nieuw Mode toevoegen : Text (met OCR)
-	- [ ] Nieuwe capture Mode: Polygon
+	- [X ] Nieuwe capture Mode: Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
 - <22-02-2026>: Bugs Tray-icoon gefixt
