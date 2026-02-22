@@ -16,5 +16,7 @@
 CMakeUserPresets.json
 
 # Misc
+/tools/
+/docs/GitHub*
 *.user
 *.log

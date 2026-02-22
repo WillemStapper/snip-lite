@@ -36,6 +36,7 @@ static constexpr UINT HOTKEY_VK = 'S';            // Ctrl+Alt+S
 // -----------------------------
 enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3 };
 static Mode g_mode = Mode::Region;
+static Mode g_lastMode = Mode::Region; // onthoudt de laatst gekozen mode (tray/overlay)
 
 static const wchar_t* ModeText(Mode m) {
     switch (m) {
@@ -134,7 +135,7 @@ static bool g_autoDismissAfterSave = false;
 static std::wstring g_saveDir;         // persistent
 static std::wstring g_lastSavedFile;   // persistent
 static std::wstring g_editorExe;       // persistent: "Open in..." program
-static std::wstring g_tempEditFile;   // alleen voor huidige preview/capture
+static std::wstring g_tempEditFile;    // alleen voor huidige preview/capture
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
@@ -258,6 +259,8 @@ static void LoadSettings() {
     if (m < 0) m = 0;
     if (m > 3) m = 3;
     g_mode = (Mode)m;
+    // na het laden van Mode uit settings:
+    g_lastMode = g_mode;
 
     int sf = IniReadInt(L"General", L"SaveFormat", 0); // default = PNG
     if (sf < 0) sf = 0;
@@ -2035,10 +2038,10 @@ else if (g_mode == Mode::Monitor) {
 
     case WM_COMMAND:
         switch (LOWORD(wParam)) {
-        case 1001: g_mode = Mode::Region;    ClearHover(); SaveSettings(); break;
-        case 1002: g_mode = Mode::Window;    ClearHover(); SaveSettings(); break;
-        case 1003: g_mode = Mode::Monitor;   ClearHover(); SaveSettings(); break;
-        case 1004: g_mode = Mode::Freestyle; ClearHover(); SaveSettings(); break;
+        case 1001: g_mode = g_lastMode = Mode::Region;    ClearHover(); SaveSettings(); break;
+        case 1002: g_mode = g_lastMode = Mode::Window;    ClearHover(); SaveSettings(); break;
+        case 1003: g_mode = g_lastMode = Mode::Monitor;   ClearHover(); SaveSettings(); break;
+        case 1004: g_mode = g_lastMode = Mode::Freestyle; ClearHover(); SaveSettings(); break;
         default: break;
         }
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -2197,10 +2200,10 @@ static void TrayRemove() {
 
 static void TrayShowMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING, TRAY_CAP_REGION, L"Capture: Region");
-    AppendMenuW(menu, MF_STRING, TRAY_CAP_WINDOW, L"Capture: Window");
-    AppendMenuW(menu, MF_STRING, TRAY_CAP_MONITOR, L"Capture: Monitor");
-    AppendMenuW(menu, MF_STRING, TRAY_CAP_FREE, L"Capture: Freestyle");
+    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Region ? MF_CHECKED : 0), TRAY_CAP_REGION, L"Capture: Region");
+    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Window ? MF_CHECKED : 0), TRAY_CAP_WINDOW, L"Capture: Window");
+    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Monitor ? MF_CHECKED : 0), TRAY_CAP_MONITOR, L"Capture: Monitor");
+    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Freestyle ? MF_CHECKED : 0), TRAY_CAP_FREE, L"Capture: Freestyle");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_EXIT, L"Exit");
 
@@ -2213,6 +2216,17 @@ static void TrayShowMenu(HWND hwnd) {
 
     if (cmd) SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(cmd, 0), 0);
     PostMessageW(hwnd, WM_NULL, 0, 0);
+}
+
+static bool TryModeFromTrayCmd(UINT cmd, Mode& outMode)
+{
+    switch (cmd) {
+    case TRAY_CAP_REGION:  outMode = Mode::Region;   return true;
+    case TRAY_CAP_WINDOW:  outMode = Mode::Window;   return true;
+    case TRAY_CAP_MONITOR: outMode = Mode::Monitor;  return true;
+    case TRAY_CAP_FREE:    outMode = Mode::Freestyle; return true;
+    default: return false;
+    }
 }
 
 static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2249,21 +2263,28 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 return 0;
             }
             if (lParam == WM_LBUTTONDBLCLK) {
-                StartCapture(Mode::Region);
+                StartCapture(g_lastMode);
                 return 0;
             }
         }
         break;
 
     case WM_COMMAND:
-        switch (LOWORD(wParam)) {
-        case TRAY_CAP_REGION:  StartCapture(Mode::Region);  return 0;
-        case TRAY_CAP_WINDOW:  StartCapture(Mode::Window);  return 0;
-        case TRAY_CAP_MONITOR: StartCapture(Mode::Monitor); return 0;
-        case TRAY_CAP_FREE:    StartCapture(Mode::Freestyle); return 0;
-        case TRAY_EXIT:        DestroyWindow(hwnd); return 0;
+        const UINT cmd = LOWORD(wParam);
+
+        if (cmd == TRAY_EXIT) {
+            DestroyWindow(hwnd);
+            return 0;
         }
-        break;
+
+        Mode m;
+        if (TryModeFromTrayCmd(cmd, m)) {
+            g_mode = g_lastMode = m;
+            SaveSettings();            // optioneel, maar handig
+            StartCapture(m);
+            return 0;
+        }
+
     }
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);

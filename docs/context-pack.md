@@ -82,7 +82,8 @@
 	- [ ] Nieuw Mode toevoegen : Text (met OCR)
 	- [-] HotKey weghalen , starten via icoon
 	- [X] in system tray (of beide opties)
-	- [ ] Freestyle met toets wordt onregelmatige Polygon
+	- [-] Freestyle met toets wordt onregelmatige Polygon
+	- [ ] Nieuwe capture Mode: Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
 - <21-02-2026>: Tray-icoon toegevoegd
