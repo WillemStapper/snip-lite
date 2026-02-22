@@ -67,25 +67,13 @@
 - (optioneel) Als Edit soms een oud bestand opent: maak “Edit” altijd gebaseerd op **huidige capture** (temp-bestand), niet op `LastSavedFile`.
 
 ## 9) Volgende stap (exact)
-- ===>> 5 (voorstel)
-  - [X] “Edit” altijd huidige selectie openen (temp-file) + optioneel temp cleanup
-  - [X] PNG export (WIC) als alternatief voor BMP
-  - [X] Window/Monitor mode implementeren
-- ===>> 7
-	- [X] Freestyle smoothing
-	- [X] Window picking verfijnen
-	- [-] Hotkeys + instellingen UI ??
-	- [-] Overlay in kleur aanpassen
-	- [X] Pointer duidelijker in beeld brengen
-	- [X] Selectie bij 'Region' door oplichten van geselecteerd gebied (zoals bij Window/Monitor)
+
 - ===>> 8
 	- [ ] Nieuw Mode toevoegen : Text (met OCR)
-	- [-] HotKey weghalen , starten via icoon
-	- [X] in system tray (of beide opties)
-	- [-] Freestyle met toets wordt onregelmatige Polygon
 	- [ ] Nieuwe capture Mode: Polygon
 
 ## 11) Mini-log (laatste wijzigingen)
+- <22-02-2026>: Bugs Tray-icoon gefixt
 - <21-02-2026>: Tray-icoon toegevoegd
 - <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)
 - <21-02-2026>: Pointer beter zichtbaar
