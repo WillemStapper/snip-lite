@@ -12,6 +12,7 @@
 #include <windowsx.h>     // GET_X_LPARAM / GET_Y_LPARAM
 #include <sal.h>          // _In_ annotations
 #include <shellapi.h>     // ShellExecuteW / ShellExecuteExW
+#include <shlobj.h>
 #include <shobjidl.h>     // IFileDialog (folder picker / exe picker)
 #include <cstring>        // memcpy / memset
 #include <string>
@@ -23,6 +24,11 @@
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
 #include <strsafe.h>
+#include <cstdlib>
+
+#ifndef MF_RADIOCHECK
+#define MF_RADIOCHECK MFT_RADIOCHECK
+#endif
 
 // -----------------------------
 // Hotkey
@@ -79,11 +85,22 @@ static bool EnsureSingleInstance() {
 static constexpr UINT WM_TRAY = WM_APP + 10;
 static constexpr UINT TRAY_ID = 1;
 
+static constexpr UINT TRAY_CAPTURE_NOW = 3999;
+
 static constexpr UINT TRAY_CAP_REGION = 4001;
 static constexpr UINT TRAY_CAP_WINDOW = 4002;
 static constexpr UINT TRAY_CAP_MONITOR = 4003;
 static constexpr UINT TRAY_CAP_FREE = 4004;
-static constexpr UINT TRAY_CAP_POLY = 4005;
+static constexpr UINT TRAY_CAP_POLY   = 4005;
+
+static constexpr UINT TRAY_NAME_PRESET1 = 4051;
+static constexpr UINT TRAY_NAME_PRESET2 = 4052;
+static constexpr UINT TRAY_NAME_PRESET3 = 4053;
+static constexpr UINT TRAY_NAME_PRESET4 = 4054;
+
+static constexpr UINT TRAY_OPEN_SAVEDIR = 4080;
+static constexpr UINT TRAY_SET_SAVEDIR = 4081;
+
 static constexpr UINT TRAY_EXIT = 4099;
 
 static NOTIFYICONDATAW g_nid{};
@@ -170,6 +187,12 @@ static std::wstring g_saveDir;         // persistent
 static std::wstring g_lastSavedFile;   // persistent
 static std::wstring g_editorExe;       // persistent: "Open in..." program
 static std::wstring g_tempEditFile;    // alleen voor huidige preview/capture
+// -----------------------------
+// Filename format (persistent)
+// -----------------------------
+static int g_namePreset = 1;              // 1..4
+static ULONGLONG g_lastNameKey = 0;       // yyyymmddhhmmss
+static int g_nameCounter = 0;             // 1..999 (reset per second)
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
@@ -242,6 +265,87 @@ static std::wstring TimestampedFileName(SaveFormat fmt) {
     return buf;
 }
 
+static ULONGLONG DateKey(const SYSTEMTIME& st) {
+    // yyyymmdd
+    return (ULONGLONG)st.wYear * 10000ULL +
+        (ULONGLONG)st.wMonth * 100ULL +
+        (ULONGLONG)st.wDay;
+}
+
+static int NextNameCounter(ULONGLONG key) {
+    if (key == g_lastNameKey) g_nameCounter++;
+    else { g_lastNameKey = key; g_nameCounter = 1; }
+
+    if (g_nameCounter > 9999) g_nameCounter = 9999;
+    return g_nameCounter;
+}
+
+static std::wstring SavedFileNamePreset(SaveFormat fmt) {
+    SYSTEMTIME st{};
+    GetLocalTime(&st);
+
+    const wchar_t* ext = L".png";
+    switch (fmt) {
+    case SaveFormat::Png:  ext = L".png"; break;
+    case SaveFormat::Jpeg: ext = L".jpg"; break;
+    case SaveFormat::Bmp:  ext = L".bmp"; break;
+    }
+
+    const ULONGLONG key = DateKey(st);
+    const int c = NextNameCounter(key);
+
+    wchar_t buf[160]{};
+
+    // modeName: short folder/name friendly representation of current mode
+    const wchar_t* modeName = L"unknown";
+    switch (g_mode) {
+    case Mode::Region:   modeName = L"region";   break;
+    case Mode::Window:   modeName = L"window";   break;
+    case Mode::Monitor:  modeName = L"monitor";  break;
+    case Mode::Freestyle:modeName = L"freestyle";break;
+    case Mode::Polygon:  modeName = L"polygon";  break;
+    default:             modeName = L"unknown";  break;
+    }
+
+    // dateFolder for preset 3: "YYYY-MM-DD"
+    wchar_t dateFolderBuf[64]{};
+    swprintf_s(dateFolderBuf, L"%04u-%02u-%02u", st.wYear, st.wMonth, st.wDay);
+    const wchar_t* dateFolder = dateFolderBuf;
+
+    switch (g_namePreset) {
+    default:
+    case 1:
+        // snip_YYYY-MM-DD_####.png
+        swprintf_s(buf, L"snip_%04u-%02u-%02u_%04d%s",
+            st.wYear, st.wMonth, st.wDay, c, ext);
+        break;
+
+    case 2:
+        // snip_mode_YYYY-MM-DD_####.png
+        swprintf_s(buf, L"snip_%s_%04u-%02u-%02u_%04d%s",
+            modeName, st.wYear, st.wMonth, st.wDay, c, ext);
+        break;
+
+    case 3:
+        // YYYY-MM-DD\snip_####.png   (no mode-folder)
+        swprintf_s(buf, L"%s\\snip_%04d%s",
+            dateFolder, c, ext);
+        break;
+
+    case 4:
+        // snip_YYYYMMDD_####.png
+        swprintf_s(buf, L"snip_%04u%02u%02u_%04d%s",
+            st.wYear, st.wMonth, st.wDay, c, ext);
+        break;
+    }
+
+    return buf;
+}
+
+static std::wstring SavedRelativePathPreset(SaveFormat fmt) {
+    return SavedFileNamePreset(fmt);
+}
+
 static int IniReadInt(const wchar_t* section, const wchar_t* key, int defVal) {
     return GetPrivateProfileIntW(section, key, defVal, SettingsFile().c_str());
 }
@@ -300,6 +404,20 @@ static void LoadSettings() {
     if (sf < 0) sf = 0;
     if (sf > 2) sf = 2;
     g_saveFormat = (SaveFormat)sf;
+
+    int np = IniReadInt(L"General", L"NamePreset", 1);
+    if (np < 1) np = 1;
+    if (np > 4) np = 4;
+    g_namePreset = np;
+
+    {
+        std::wstring sKey = IniReadStr(L"General", L"LastNameKey", L"0");
+        g_lastNameKey = (ULONGLONG)wcstoull(sKey.c_str(), nullptr, 10);
+
+        g_nameCounter = IniReadInt(L"General", L"NameCounter", 0);
+        if (g_nameCounter < 0) g_nameCounter = 0;
+        if (g_nameCounter > 9999) g_nameCounter = 9999;
+    }
 }
 
 static void SaveSettings() {
@@ -309,6 +427,14 @@ static void SaveSettings() {
     IniWriteStr(L"General", L"LastSavedFile", g_lastSavedFile);
     IniWriteInt(L"General", L"Mode", (int)g_mode);
     IniWriteInt(L"General", L"SaveFormat", (int)g_saveFormat);
+    IniWriteInt(L"General", L"NamePreset", g_namePreset);
+
+    {
+        wchar_t buf[32]{};
+        swprintf_s(buf, L"%llu", (unsigned long long)g_lastNameKey);
+        IniWriteStr(L"General", L"LastNameKey", buf);
+        IniWriteInt(L"General", L"NameCounter", g_nameCounter);
+    }
 }
 
 static std::wstring DirName(const std::wstring& path) {
@@ -1055,7 +1181,7 @@ static bool ApplyLassoAlphaMask(HBITMAP hbmp, const std::vector<POINT>& ptsClien
 
         // snijpunten met scanline (even-odd rule)
         const int n = (int)poly.size();
-        for (int i = 0; i < n; ++i) {
+        for (int i = 0; i < n; i++) {
             POINT a = poly[i];
             POINT b = poly[(i + 1) % n];
             if (a.y == b.y) continue;
@@ -1348,7 +1474,26 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             const bool forcePng = g_captureHasAlpha;
             const SaveFormat actual = forcePng ? SaveFormat::Png : g_saveFormat;
 
-            std::wstring filePath = g_saveDir + L"\\" + TimestampedFileName(actual);
+            // basis save-dir
+            if (g_saveDir.empty()) g_saveDir = DefaultSaveDir();
+            EnsureDirectoryRecursive(g_saveDir + L"\\");
+
+            // preset kan subfolders bevatten, bv: "2026-02-23\\snip_0001.png"
+            std::wstring rel = SavedRelativePathPreset(actual);
+
+            // full path bouwen (veilig met/zonder trailing \)
+            std::wstring filePath = g_saveDir;
+            if (!filePath.empty() && filePath.back() != L'\\') filePath += L"\\";
+            filePath += rel;
+
+            // als rel een subfolder bevat: die map eerst aanmaken
+            auto pos = rel.find_last_of(L"\\/");
+            if (pos != std::wstring::npos) {
+                std::wstring subDir = g_saveDir;
+                if (!subDir.empty() && subDir.back() != L'\\') subDir += L"\\";
+                subDir += rel.substr(0, pos);
+                EnsureDirectoryRecursive(subDir + L"\\");
+            }
 
             if (SaveBitmapFile(g_captureBmp, filePath, actual)) {
                 g_lastSavedFile = filePath;
@@ -1928,7 +2073,6 @@ static void PolygonFinalize(HWND hwnd) {
         MessageBeep(MB_ICONERROR);
         ShowWindow(hwnd, SW_SHOW);
         InvalidateRect(hwnd, nullptr, TRUE);
-        PolyReset();
         return;
     }
 
@@ -1937,7 +2081,6 @@ static void PolygonFinalize(HWND hwnd) {
         MessageBeep(MB_ICONERROR);
         ShowWindow(hwnd, SW_SHOW);
         InvalidateRect(hwnd, nullptr, TRUE);
-        PolyReset();
         return;
     }
 
@@ -2236,7 +2379,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
         }
 
-        // Window/Monitor/Freestyle: capture on click
+        // Window/Monitor: capture on click
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(hwnd, &pt);
 
@@ -2413,7 +2556,6 @@ else if (g_mode == Mode::Monitor) {
                 HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
                 HGDIOBJ oldPen = SelectObject(hdc, pen);
                 HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
                 Rectangle(hdc, ss.left, ss.top, ss.right, ss.bottom);
 
                 SelectObject(hdc, oldBrush);
@@ -2512,11 +2654,31 @@ static void TrayRemove() {
 
 static void TrayShowMenu(HWND hwnd) {
     HMENU menu = CreatePopupMenu();
-    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Region ? MF_CHECKED : 0), TRAY_CAP_REGION, L"Capture: Region");
-    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Window ? MF_CHECKED : 0), TRAY_CAP_WINDOW, L"Capture: Window");
-    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Monitor ? MF_CHECKED : 0), TRAY_CAP_MONITOR, L"Capture: Monitor");
-    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Freestyle ? MF_CHECKED : 0), TRAY_CAP_FREE, L"Capture: Freestyle");
-    AppendMenuW(menu, MF_STRING | (g_lastMode == Mode::Polygon ? MF_CHECKED : 0), TRAY_CAP_POLY, L"Capture: Polygon");
+
+    AppendMenuW(menu, MF_STRING, TRAY_CAPTURE_NOW, L"Capture now");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    // --- Select Mode submenu
+    HMENU mode = CreatePopupMenu();
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Region ? MF_CHECKED : 0), TRAY_CAP_REGION, L"Region");
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Window ? MF_CHECKED : 0), TRAY_CAP_WINDOW, L"Window");
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Monitor ? MF_CHECKED : 0), TRAY_CAP_MONITOR, L"Monitor");
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Freestyle ? MF_CHECKED : 0), TRAY_CAP_FREE, L"Freestyle");
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Polygon  ? MF_CHECKED : 0), TRAY_CAP_POLY,    L"Polygon");
+
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)mode, L"Select Mode");
+
+    // --- File name format submenu (date + counter)
+    HMENU fn = CreatePopupMenu();
+    AppendMenuW(fn, MF_STRING | MF_RADIOCHECK | (g_namePreset == 1 ? MF_CHECKED : 0), TRAY_NAME_PRESET1, L"Preset 1  (snip_YYYY-MM-DD_####)");
+    AppendMenuW(fn, MF_STRING | MF_RADIOCHECK | (g_namePreset == 2 ? MF_CHECKED : 0), TRAY_NAME_PRESET2, L"Preset 2  (snip_mode_YYYY-MM-DD_####)");
+    AppendMenuW(fn, MF_STRING | MF_RADIOCHECK | (g_namePreset == 3 ? MF_CHECKED : 0), TRAY_NAME_PRESET3, L"Preset 3  (YYYY-MM-DD/snip_####)");
+    AppendMenuW(fn, MF_STRING | MF_RADIOCHECK | (g_namePreset == 4 ? MF_CHECKED : 0), TRAY_NAME_PRESET4, L"Preset 4  (snip_YYYYMMDD_####)");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)fn, L"File name format");
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, TRAY_OPEN_SAVEDIR, L"Open save folder");
+    AppendMenuW(menu, MF_STRING, TRAY_SET_SAVEDIR, L"Set save folder...");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_EXIT, L"Exit");
 
@@ -2538,7 +2700,7 @@ static bool TryModeFromTrayCmd(UINT cmd, Mode& outMode)
     case TRAY_CAP_WINDOW:  outMode = Mode::Window;   return true;
     case TRAY_CAP_MONITOR: outMode = Mode::Monitor;  return true;
     case TRAY_CAP_FREE:    outMode = Mode::Freestyle; return true;
-    case TRAY_CAP_POLY:    outMode = Mode::Polygon;   return true;
+    case TRAY_CAP_POLY:    outMode = Mode::Polygon;  return true;
     default: return false;
     }
 }
@@ -2592,10 +2754,36 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
 
         Mode m;
+        if (cmd == TRAY_CAPTURE_NOW) {
+            StartCapture(g_lastMode);
+            return 0;
+        }
         if (TryModeFromTrayCmd(cmd, m)) {
             g_mode = g_lastMode = m;
             SaveSettings();            // optioneel, maar handig
-            StartCapture(m);
+            StartCapture(m);   // direct starten na mode keuze
+            return 0;
+        }
+        if (cmd == TRAY_OPEN_SAVEDIR) {
+            if (g_saveDir.empty()) g_saveDir = DefaultSaveDir();
+            OpenPath(g_saveDir);
+            return 0;
+        }
+
+        if (cmd == TRAY_SET_SAVEDIR) {
+            std::wstring picked;
+            std::wstring start = g_saveDir.empty() ? DefaultSaveDir() : g_saveDir;
+            if (PickFolder(hwnd, start, picked)) {
+                g_saveDir = picked;
+                EnsureDirectoryRecursive(g_saveDir + L"\\");
+                SaveSettings();
+            }
+            return 0;
+        }
+
+        if (cmd >= TRAY_NAME_PRESET1 && cmd <= TRAY_NAME_PRESET4) {
+            g_namePreset = (int)(cmd - TRAY_NAME_PRESET1) + 1; // 1..4
+            SaveSettings();
             return 0;
         }
 

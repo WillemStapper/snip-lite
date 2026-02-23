@@ -64,14 +64,13 @@
   - X=, Y=, W=, H=
 
 ## 9) Volgende stap (exact)
-- ===>> 8
-	- [ ] OCR- functie toevoegen (via Tesseract of Windows OCR API)
-	- [X] Nieuwe capture Mode: Polygon
+- ===>>
+Programma- en Tray icoon maken (inclusief .ico bestand) en toevoegen aan project + build.
 
 ## 11) Mini-log (laatste wijzigingen)
-
-- <23-02-2026>: Polygon mode toegevoegd (klik voor punten, dubbelklik om te sluiten)
-- <22-02-2026>: Bugs Tray-icoon gefixt
+- <23-02-2026>: Tray menu uitgebreid
+- <22-02-2026>: Polygon mode toegevoegd (klik voor punten, dubbelklik om te sluiten)
+- <21-02-2026>: Bugs Tray-icoon gefixt
 - <21-02-2026>: Tray-icoon toegevoegd
 - <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)
 - <21-02-2026>: Pointer beter zichtbaar
