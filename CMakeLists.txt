@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(snip_lite WIN32
   src/main.cpp
+  src/snip_lite.rc
 )
 
 target_compile_definitions(snip_lite PRIVATE UNICODE _UNICODE)

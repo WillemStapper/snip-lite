@@ -1,0 +1,7 @@
+#ifndef SNIP_LITE_RESOURCE_H
+#define SNIP_LITE_RESOURCE_H
+
+#define IDI_APP  101
+#define IDI_TRAY 102
+
+#endif // SNIP_LITE_RESOURCE_H

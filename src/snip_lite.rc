@@ -1,0 +1,4 @@
+#include "resource.h"
+
+IDI_APP  ICON "res\\snip_lite.ico"
+IDI_TRAY ICON "res\\snip_tray.ico"

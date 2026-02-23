@@ -25,6 +25,7 @@
 #pragma comment(lib, "dwmapi.lib")
 #include <strsafe.h>
 #include <cstdlib>
+#include "resource.h"
 
 #ifndef MF_RADIOCHECK
 #define MF_RADIOCHECK MFT_RADIOCHECK
@@ -195,6 +196,13 @@ static ULONGLONG g_lastNameKey = 0;       // yyyymmddhhmmss
 static int g_nameCounter = 0;             // 1..999 (reset per second)
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
+
+// -----------------------------
+// Tray-iconen
+// -----------------------------
+static HICON AppIconBig();
+static HICON AppIconSmall();
+static HICON TrayIconSmall();
 
 // =========================================================
 // Helpers: strings, directories, INI settings
@@ -1812,6 +1820,13 @@ static void CreatePreviewWindow() {
         nullptr, nullptr, g_hInst, nullptr
     );
 
+    if (g_hwndPreview) {
+        HICON hBig = AppIconBig();
+        HICON hSmall = AppIconSmall();
+        if (hBig)   SendMessageW(g_hwndPreview, WM_SETICON, ICON_BIG, (LPARAM)hBig);
+        if (hSmall) SendMessageW(g_hwndPreview, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
+    }
+
     ShowWindow(g_hwndPreview, SW_SHOW);
     SetForegroundWindow(g_hwndPreview);
     SetFocus(g_hwndPreview);
@@ -2630,6 +2645,23 @@ static void StartCapture(Mode m) {
     CreateOverlay();
 }
 
+static HICON LoadIconRes(int id, int cx, int cy) {
+    return (HICON)LoadImageW(g_hInst, MAKEINTRESOURCE(id), IMAGE_ICON, cx, cy,
+        LR_DEFAULTCOLOR | LR_SHARED);
+}
+
+static HICON AppIconBig() {
+    return LoadIconRes(IDI_APP, GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+}
+
+static HICON AppIconSmall() {
+    return LoadIconRes(IDI_APP, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+}
+
+static HICON TrayIconSmall() {
+    return LoadIconRes(IDI_TRAY, GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
+}
+
 static void TrayAdd(HWND hwnd) {
     if (g_trayAdded) return;
 
@@ -2639,7 +2671,8 @@ static void TrayAdd(HWND hwnd) {
     g_nid.uID = TRAY_ID;
     g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAY;
-    g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    g_nid.hIcon = TrayIconSmall();
+    if (!g_nid.hIcon) g_nid.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     HRESULT hr = StringCchCopyW(g_nid.szTip, _countof(g_nid.szTip), L"snip-lite");
     if (FAILED(hr)) g_nid.szTip[0] = 0;
 
