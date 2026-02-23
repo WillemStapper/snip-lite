@@ -98,6 +98,11 @@ static constexpr UINT TRAY_NAME_PRESET1 = 4051;
 static constexpr UINT TRAY_NAME_PRESET2 = 4052;
 static constexpr UINT TRAY_NAME_PRESET3 = 4053;
 static constexpr UINT TRAY_NAME_PRESET4 = 4054;
+static constexpr UINT TRAY_FMT_PNG = 4060;
+static constexpr UINT TRAY_FMT_JPEG = 4061;
+static constexpr UINT TRAY_FMT_BMP = 4062;
+
+static constexpr UINT TRAY_TOGGLE_AUTODISMISS = 4070;
 
 static constexpr UINT TRAY_OPEN_SAVEDIR = 4080;
 static constexpr UINT TRAY_SET_SAVEDIR = 4081;
@@ -181,6 +186,7 @@ static RECT g_rcImage{};
 static RECT g_btnSave{};
 static RECT g_btnEdit{};
 static RECT g_btnDismiss{};
+static RECT g_rcStatus{};
 static std::wstring g_statusText;
 static bool g_autoDismissAfterSave = false;
 
@@ -198,7 +204,7 @@ static int g_nameCounter = 0;             // 1..999 (reset per second)
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
 // -----------------------------
-// Tray-iconen
+// Filename format (persistent)
 // -----------------------------
 static HICON AppIconBig();
 static HICON AppIconSmall();
@@ -1360,24 +1366,31 @@ static void LayoutPreview(HWND hwnd) {
     GetClientRect(hwnd, &rc);
 
     const int pad = 12;
-    const int barH = 52;
+    const int barH = 52;       // knoppenbalk
+    const int statusH = 22;    // statusbar onderaan
     const int btnW = 110;
     const int btnH = 34;
     const int gap = 10;
 
+    // statusbar (hele onderrand)
+    g_rcStatus = rc;
+    g_rcStatus.top = rc.bottom - statusH;
+
+    // image area
     g_rcImage = rc;
     g_rcImage.left += pad;
     g_rcImage.top += pad;
     g_rcImage.right -= pad;
-    g_rcImage.bottom -= (barH + pad);
+    g_rcImage.bottom -= (barH + statusH + pad);
 
+    // buttons (boven statusbar)
     int totalW = btnW * 3 + gap * 2;
     int x0 = (rc.right - totalW) / 2;
-    int y0 = rc.bottom - barH + (barH - btnH) / 2;
+    int y0 = rc.bottom - statusH - barH + (barH - btnH) / 2;
 
-    g_btnSave = { x0,                 y0, x0 + btnW,            y0 + btnH };
-    g_btnEdit = { x0 + btnW + gap,    y0, x0 + 2 * btnW + gap,   y0 + btnH };
-    g_btnDismiss = { x0 + 2 * (btnW + gap),  y0, x0 + 3 * btnW + 2 * gap, y0 + btnH };
+    g_btnSave = { x0,                      y0, x0 + btnW,                   y0 + btnH };
+    g_btnEdit = { x0 + (btnW + gap) * 1,   y0, x0 + (btnW + gap) * 1 + btnW, y0 + btnH };
+    g_btnDismiss = { x0 + (btnW + gap) * 2,   y0, x0 + (btnW + gap) * 2 + btnW, y0 + btnH };
 }
 
 static void DestroyOverlay();
@@ -1740,15 +1753,42 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         drawBtn(g_btnEdit, L"Edit");
         drawBtn(g_btnDismiss, L"Dismiss");
 
-        if (!g_statusText.empty()) {
+        // statusbar
+        {
+            RECT sb = g_rcStatus;
+
+            // achtergrond
+            HBRUSH b = CreateSolidBrush(RGB(45, 45, 45));
+            FillRect(hdc, &sb, b);
+            DeleteObject(b);
+
+            // scheidingslijn boven statusbar
+            HPEN pen = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+            HGDIOBJ oldPen = SelectObject(hdc, pen);
+            MoveToEx(hdc, sb.left, sb.top, nullptr);
+            LineTo(hdc, sb.right, sb.top);
+            SelectObject(hdc, oldPen);
+            DeleteObject(pen);
+
+            // icoon links
+            int iw = GetSystemMetrics(SM_CXSMICON);
+            int ih = GetSystemMetrics(SM_CYSMICON);
+            int ix = sb.left + 8;
+            int iy = sb.top + (sb.bottom - sb.top - ih) / 2;
+
+            HICON hi = AppIconSmall(); // bestaat al bij jou
+            if (hi) DrawIconEx(hdc, ix, iy, hi, iw, ih, 0, nullptr, DI_NORMAL);
+
+            // tekst
+            std::wstring txt = g_statusText.empty() ? L"Ready" : g_statusText;
+
+            RECT tr = sb;
+            tr.left = ix + iw + 8;
+            tr.right -= 8;
+
             SetBkMode(hdc, TRANSPARENT);
-            SetTextColor(hdc, RGB(180, 180, 180));
-            RECT tr = rc;
-            tr.left += 12;
-            tr.right -= 12;
-            tr.bottom -= 6;
-            tr.top = tr.bottom - 18;
-            DrawTextW(hdc, g_statusText.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            SetTextColor(hdc, RGB(210, 210, 210));
+            DrawTextW(hdc, txt.c_str(), -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         }
 
         EndPaint(hwnd, &ps);
@@ -1820,12 +1860,15 @@ static void CreatePreviewWindow() {
         nullptr, nullptr, g_hInst, nullptr
     );
 
-    if (g_hwndPreview) {
-        HICON hBig = AppIconBig();
-        HICON hSmall = AppIconSmall();
-        if (hBig)   SendMessageW(g_hwndPreview, WM_SETICON, ICON_BIG, (LPARAM)hBig);
-        if (hSmall) SendMessageW(g_hwndPreview, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
+    if (!g_hwndPreview) {
+        MessageBeep(MB_ICONERROR);
+        return;
     }
+
+    HICON hBig = AppIconBig();
+    HICON hSmall = AppIconSmall();
+    if (hBig)   SendMessageW(g_hwndPreview, WM_SETICON, ICON_BIG, (LPARAM)hBig);
+    if (hSmall) SendMessageW(g_hwndPreview, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
 
     ShowWindow(g_hwndPreview, SW_SHOW);
     SetForegroundWindow(g_hwndPreview);
@@ -2709,6 +2752,17 @@ static void TrayShowMenu(HWND hwnd) {
     AppendMenuW(fn, MF_STRING | MF_RADIOCHECK | (g_namePreset == 4 ? MF_CHECKED : 0), TRAY_NAME_PRESET4, L"Preset 4  (snip_YYYYMMDD_####)");
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)fn, L"File name format");
 
+    // --- Save format submenu
+    HMENU sf = CreatePopupMenu();
+    AppendMenuW(sf, MF_STRING | MF_RADIOCHECK | (g_saveFormat == SaveFormat::Png ? MF_CHECKED : 0), TRAY_FMT_PNG, L"PNG");
+    AppendMenuW(sf, MF_STRING | MF_RADIOCHECK | (g_saveFormat == SaveFormat::Jpeg ? MF_CHECKED : 0), TRAY_FMT_JPEG, L"JPEG");
+    AppendMenuW(sf, MF_STRING | MF_RADIOCHECK | (g_saveFormat == SaveFormat::Bmp ? MF_CHECKED : 0), TRAY_FMT_BMP, L"BMP");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)sf, L"Save format");
+
+    // --- Auto-dismiss toggle
+    AppendMenuW(menu, MF_STRING | (g_autoDismissAfterSave ? MF_CHECKED : 0),
+        TRAY_TOGGLE_AUTODISMISS, L"Auto-dismiss after Save");
+
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, TRAY_OPEN_SAVEDIR, L"Open save folder");
     AppendMenuW(menu, MF_STRING, TRAY_SET_SAVEDIR, L"Set save folder...");
@@ -2816,6 +2870,21 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (cmd >= TRAY_NAME_PRESET1 && cmd <= TRAY_NAME_PRESET4) {
             g_namePreset = (int)(cmd - TRAY_NAME_PRESET1) + 1; // 1..4
+            SaveSettings();
+            return 0;
+        }
+
+        if (cmd == TRAY_TOGGLE_AUTODISMISS) {
+            g_autoDismissAfterSave = !g_autoDismissAfterSave;
+            SaveSettings();
+            return 0;
+        }
+
+        if (cmd == TRAY_FMT_PNG || cmd == TRAY_FMT_JPEG || cmd == TRAY_FMT_BMP) {
+            if (cmd == TRAY_FMT_PNG)  g_saveFormat = SaveFormat::Png;
+            if (cmd == TRAY_FMT_JPEG) g_saveFormat = SaveFormat::Jpeg;
+            if (cmd == TRAY_FMT_BMP)  g_saveFormat = SaveFormat::Bmp;
+
             SaveSettings();
             return 0;
         }
