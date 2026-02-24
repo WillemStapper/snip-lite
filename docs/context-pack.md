@@ -1,87 +1,78 @@
-# Snip-Lite — Context Pack
+# Snip-Lite — Context Pack (Snapshot)
 
-## 0) Repo & exacte versie
+## 0) Repo & exact snapshot
 - Repo: https://github.com/WillemStapper/snip-lite
 - Branch: main
-## commit invullen met: git rev-parse --short HEAD
-- Commit: da34124
+- Commit: 8f15709
+- Snapshot date: 2026-02-24
 
-## 1) Doel in 1 zin
-- Snip-tool zonder “grote GUI”: hotkey → selectie → preview → save/edit/clipboard.
+## 1) One-line goal
+A fast snipping tool without a “big GUI”: hotkey/tray → selection overlay → preview → save/edit/clipboard.
 
-## 2) Wat werkt nu (huidige functionaliteit)
-- [x] Hotkey: Ctrl+Alt+S toggles overlay
-- [x] Overlay: crosshair + mode-tekst
-- [x] RMB overlay: mode menu (Region/Window/Monitor) + onthouden
-- [x] Region selectie: slepen → rechthoek → capture
-- [x] Clipboard: plakken werkt in Photoshop CS6 (niet verticaal geflipt)
-- [x] Preview: toont knipsel + knoppen Save / Edit / Dismiss
-- [x] Preview RMB menu’s:
-  - Save: open folder, choose folder, auto-dismiss toggle
-  - Edit: “Open in (last program)”, “Choose program…”
-- [x] Preview slepen: venster verplaatsen door overal te klikken (behalve knoppen)
-- [x] Cursor: “handje” in preview (knoppen + sleepgebied)
-- [x] Preview positie/grootte wordt onthouden tussen sessies
-- [x] Program picker start standaard in Program Files (x86)
-- [x] Preview “topmost” wordt losgelaten na menu-acties (niet meer vast op voorgrond)
-- [x] Settings persistent via `%LOCALAPPDATA%\snip-lite\settings.ini`
+## 2) Current UX flow
+- App runs in the background (no main window).
+- Start capture:
+  - Hotkey: `Ctrl+Alt+S` toggles the overlay
+  - Tray:
+    - Double-click → capture using **last mode**
+    - Right-click → choose mode and other settings, or exit
+- In overlay:
+  - Right-click → mode menu
+  - `Esc` → cancel / close overlay
+- After capture:
+  - Copy to clipboard
+  - Show preview window with **Save / Edit / Dismiss**
 
-## 3) Belangrijke design-keuzes (waarom zo)
-- Capture bitmap is **bottom-up** (`biHeight = +h`) om Photoshop CS6 vertical-flip te voorkomen.
-- Settings in INI (1 bestand, makkelijk te debuggen en te back-uppen).
-- Geen controls/windows “overal”: alles wordt getekend en bediend via mouse + kleine popup menu’s.
-
-## 4) Waar staan de dingen in de code
-- `src/main.cpp`
-  - Hotkey/message-only window: `MsgProc`, `wWinMain`
-  - Overlay: `CreateOverlay`, `OverlayProc`
-  - Capture: `CaptureRectToBitmap`, `CopyBitmapToClipboard`
-  - Preview: `CreatePreviewWindow`, `PreviewProc`, `LayoutPreview`
-  - Save BMP: `SaveBitmapAsBmpFile`
-  - Settings: `LoadSettings`, `SaveSettings`, INI helpers
-  - Dialogs: `PickFolder`, `PickExe`
-  - “Open in”: `OpenInEditor`
-  - Preview topmost toggle: `PreviewDropTopmost` (of equivalent)
-  - Temp voor Edit (huidige selectie): `g_tempEditFile` + `MakeTempEditPath` (als geïmplementeerd)
-
-## 5) Build & run
-- Configure: `cmake --preset <jouw-preset>`
-- Build: `cmake --build --preset <jouw-preset>`
-- Run: via Visual Studio (Startup Item = snip_lite.exe) of vanuit build map.
-
-## 6) Dependencies / linken (CMake)
-- `target_link_libraries(snip_lite PRIVATE user32 gdi32 shell32 ole32)`
-
-## 7) Settings keys (INI)
-- Bestand: `%LOCALAPPDATA%\snip-lite\settings.ini`
-- Sectie `[General]`
-  - SaveDir=
-  - AutoDismiss=0/1
-  - EditorExe=
-  - LastSavedFile=
-  - Mode=0/1/2/3
-- Sectie `[Preview]`
-  - X=, Y=, W=, H=
-
-## 9) Volgende stap (exact)
-- ===>>
-Programma- en Tray icoon maken (inclusief .ico bestand) en toevoegen aan project + build.
-
-## 11) Mini-log (laatste wijzigingen)
-- <23-02-2026>: Tray menu uitgebreid
-- <22-02-2026>: Polygon mode toegevoegd (klik voor punten, dubbelklik om te sluiten)
-- <21-02-2026>: Bugs Tray-icoon gefixt
-- <21-02-2026>: Tray-icoon toegevoegd
-- <21-02-2026>: Region selectie verbeteren door geselecteerd gebied op te lichten (zoals bij Window/Monitor)
-- <21-02-2026>: Pointer beter zichtbaar
-- <21-02-2026>: Freestyle smooth
-- <21-02-2026>: Edit/Choose program opent nu direct huidige selectie (temp-bestand)
-- <19-02-2026>: Window/Monitor mode implementeren
-- <19-02-2026>: Freestyle (Lasso) toegevoegd
-- <19-02-2026>: PNG export via WIC toegevoegd plus keuze in JPG en BMP
-- <19-02-2026>: Edit opent nu altijd huidige selectie (temp-file)
+## 3) Implemented modes
+- Region (drag rectangle)
+- Window (hover highlight + click)
+- Monitor (hover highlight + click)
+- Freestyle / Lasso (draw shape; outside becomes transparent)
+- Polygon (click points; double-click or click first to close; outside becomes transparent)
 - 
-- <18-02-2026>: Preview is niet meer “topmost” na menu-acties
-- <18-02-2026>: Cursor verandert in “handje” in preview (knoppen + sleepgebied)
-- <18-02-2026>: Preview positie/grootte wordt nu onthouden tussen sessies
-- <18-02-2026>: Program picker start nu standaard in Program Files (x86)
+## 4) Save & Edit behavior
+- Save:
+  - Formats: PNG / JPEG / BMP
+  - Freestyle always saves PNG (transparency)
+  - Right-click Save: format, open folder, choose folder, auto-dismiss toggle
+- Edit:
+  - Always opens the **current capture** using a **temp file**
+  - Right-click Edit: open in last program / choose program
+
+## 5) Persistence (INI)
+- `%LOCALAPPDATA%\snip-lite\settings.ini`
+- Stores: save folder, format, auto-dismiss, editor path, last saved file, last mode
+
+## 6) Key code areas (main.cpp)
+- Message-only window + hotkey: `MsgProc`, `wWinMain`
+- Tray icon + tray menu: `TrayAdd`, `TrayShowMenu`, `TryModeFromTrayCmd`
+- Overlay window: `CreateOverlay`, `OverlayProc`
+- Hover picking: window/monitor hit-testing + hover drawing
+- Capture:
+  - Region/window/monitor: capture rect → clipboard → preview
+  - Freestyle: lasso point collection → alpha mask → clipboard → preview
+- Clipboard:
+  - Opaque capture
+  - Alpha (freestyle) capture
+- Preview window: create/layout/buttons/context menus
+- Save:
+  - BMP writer
+  - PNG/JPEG via WIC (Windows Imaging Component)
+- Settings:
+  - `LoadSettings`, `SaveSettings` + INI helpers
+
+## 7) Build
+- CMake preset: `vs2026-x64`
+- Build presets: `debug`, `release`
+- Output EXE in `build/vs2026-x64/<Debug|Release>/snip_lite.exe`
+
+## 8) Known issues / TODOs
+- Packaging not done yet:
+  - Portable ZIP release
+  - Installer (setup) release
+
+## 9) Next milestone: v1.0.0 release work
+- Produce Release build artifacts:
+  - ZIP (portable)
+  - Installer
+- Create a simple release webpage (later hosted)

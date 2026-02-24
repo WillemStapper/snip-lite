@@ -1,52 +1,58 @@
-# snip-lite
 
-Minimalistische snip-tool voor Windows: **hotkey → selectie → preview → save/edit/clipboard**.  
-Geen “grote GUI”; alles gebeurt via een overlay + een kleine preview + popup-menu’s.
+# Snip-Lite
+A minimal snipping tool for Windows: **hotkey → select → preview → save / edit / clipboard**.
+No “big GUI”: just a full-screen overlay, a small preview window, and context menus.
 
-## Wat het doet
-
-- **Hotkey:** `Ctrl + Alt + S` toggelt de overlay.
+## What it does
+- **Hotkey:** `Ctrl + Alt + S` toggles the capture overlay.
+  - If the hotkey is already taken, Snip-Lite still works via the **tray icon**.
+- **System tray:**
+  - **Double-click** the tray icon → start capture with the **last used mode**
+  - **Right-click** the tray icon → pick a capture mode or exit
 - **Overlay:**
-  - Crosshair cursor
-  - Mode-tekst linksboven
-  - **Rechtsklik**: mode-menu
-  - `ESC`: sluiten / annuleren
-- **Modes:**
-  - **Region**: klik + sleep → rechthoek → capture
-  - **Window**: hover highlight → klik → capture van venster
-  - **Monitor**: hover highlight → klik → capture van monitor
-  - **Freestyle (Lasso)**: teken vorm → loslaten → capture met transparantie buiten de lasso
-- **Na capture:**
-  - Direct naar **clipboard**
-  - **Preview window** met knoppen: **Save / Edit / Dismiss**
-  - Preview venster kun je slepen door overal te klikken (behalve op knoppen)
+  - Crosshair cursor (drawn by Snip-Lite)
+  - Current mode text (top-left)
+  - **Right-click** → mode menu
+  - `Esc` → cancel / close
 
-## Save (formaat + folder)
+## Capture modes
+- **Region**: click + drag → rectangle → capture
+- **Window**: hover highlights a window → click → capture that window
+- **Monitor**: hover highlights a monitor → click → capture that monitor
+- **Freestyle (Lasso)**: hold left mouse button and draw a shape → release → capture
+  - Outside the lasso becomes **transparent** (alpha)
+- **Polygon**: click to create points → double-click or click the first point to close → capture
+  - Outside the polygon becomes **transparent** (alpha)
 
-- **Default formaat:** PNG
-- **Linksklik op Save**
-  - Region/Window/Monitor: bewaart in het **laatst gekozen formaat** (PNG/JPEG/BMP)
-  - Freestyle: bewaart **altijd PNG** (vanwege transparantie)
-- **Rechtsklik op Save** (geen dialoog)
+## After capture
+- Capture is copied to the **clipboard**
+- A **preview window** opens with buttons:
+  - **Save**
+  - **Edit**
+  - **Dismiss**
+- You can drag the preview window by clicking and dragging anywhere (except the buttons)
+
+## Save (format + folder)
+- **Default format:** PNG
+- **Left-click Save**
+  - Region / Window / Monitor: saves using the **last selected format** (PNG / JPEG / BMP)
+  - Freestyle / Polygon: always saves **PNG** (because it can contain transparency)
+- **Right-click Save** (no dialog)
   - **Save format → PNG / JPEG / BMP**
   - **Open capture folder**
   - **Choose capture folder…**
-  - **Auto-dismiss after Save** (preview sluit automatisch na opslaan)
+  - **Auto-dismiss after Save** (closes the preview after saving)
 
 ## Edit
-
-- **Linksklik Edit:** opent de huidige capture via een **temp-bestand** (dus nooit per ongeluk een oude file).
-- **Rechtsklik Edit:**
+- **Left-click Edit:** opens the **current capture** via a **temp file** (so you never edit an older file by accident).
+- **Right-click Edit:**
   - **Open in (last program)**
-  - **Choose program…** (kies vaste editor)
+  - **Choose program…** (pick a fixed editor EXE)
 
 ## Settings (persistent)
-
-Bestand:
+File:
 - `%LOCALAPPDATA%\snip-lite\settings.ini`
-
-Belangrijkste keys:
-
+Keys:
 `[General]`
 - `SaveDir=...`
 - `SaveFormat=0/1/2`  (0=PNG, 1=JPEG, 2=BMP)
@@ -54,19 +60,34 @@ Belangrijkste keys:
 - `EditorExe=...`
 - `LastSavedFile=...`
 - `Mode=0/1/2/3` (0=Region, 1=Window, 2=Monitor, 3=Freestyle)
+Temp files:
+- `%LOCALAPPDATA%\snip-lite\tmp\` (used for “Edit”)
+- Settings are loaded at startup and saved on changes (e.g. when you change the mode or save a capture).
 
-`[Preview]`
-- `X=`, `Y=`, `W=`, `H=` (positie/grootte preview)
 
 ## Build & run
-
-### Vereisten
+### Requirements
 - Windows 10/11
-- Visual Studio met “Desktop development with C++”
-- CMake 3.23+
+- Visual Studio with **Desktop development with C++**
+- CMake **3.23+**
 
 ### Build (PowerShell)
 ```powershell
+# Configure
 cmake --preset vs2026-x64
+
+# Build Debug
 cmake --build --preset debug
 
+# Build Release
+cmake --build --preset release
+```
+
+### Output
+- `build/vs2026-x64/Debug/snip_lite.exe`
+- `build/vs2026-x64/Release/snip_lite.exe`
+
+### Run
+- Start `snip_lite.exe`
+- You should see a tray icon
+- Exit: **right-click tray icon → Exit**
