@@ -210,6 +210,7 @@ static HICON AppIconBig();
 static HICON AppIconSmall();
 static HICON TrayIconSmall();
 
+#pragma region Helpers: strings, directories, INI settings
 // =========================================================
 // Helpers: strings, directories, INI settings
 // =========================================================
@@ -461,7 +462,8 @@ static void PreviewDropTopmost(HWND hwnd) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
-
+#pragma endregion
+#pragma region Helpers: geometry, UI
 // =========================================================
 // Helpers: geometry, UI
 // =========================================================
@@ -638,7 +640,8 @@ static void SetStatus(HWND hwndPreview, const std::wstring& s) {
     InvalidateRect(hwndPreview, nullptr, TRUE);
     SetTimer(hwndPreview, TIMER_STATUS_CLEAR, 1500, nullptr);
 }
-
+#pragma endregion
+#pragma region Dialog helpers: Pick folder / Pick exe
 // =========================================================
 // Dialog helpers: Pick folder / Pick exe
 // =========================================================
@@ -749,7 +752,8 @@ static bool PickExe(HWND owner, std::wstring& outExe) {
 
     return !outExe.empty();
 }
-
+#pragma endregion
+#pragma region Capture + Clipboard + Save
 // =========================================================
 // Capture + Clipboard + Save
 // =========================================================
@@ -1307,7 +1311,8 @@ static void OpenPath(const std::wstring& path) {
     if (path.empty()) return;
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
-
+#pragma endregion
+#pragma region Menus
 // =========================================================
 // Menus
 // =========================================================
@@ -1357,7 +1362,8 @@ static void ShowEditMenu(HWND hwnd) {
     TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NOANIMATION, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 }
-
+#pragma endregion
+#pragma region Preview layout + lifecycle
 // =========================================================
 // Preview layout + lifecycle
 // =========================================================
@@ -1403,7 +1409,8 @@ static void DestroyPreview() {
     FreeCapture();
     g_statusText.clear();
 }
-
+#pragma endregion
+#pragma region Preview WindowProc
 // =========================================================
 // Preview WindowProc
 // =========================================================
@@ -1801,7 +1808,8 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-
+#pragma endregion
+#pragma region Preview creation
 // =========================================================
 // Preview creation
 // =========================================================
@@ -1874,7 +1882,8 @@ static void CreatePreviewWindow() {
     SetForegroundWindow(g_hwndPreview);
     SetFocus(g_hwndPreview);
 }
-
+#pragma endregion
+#pragma region Overlay
 // =========================================================
 // Overlay
 // =========================================================
@@ -2677,7 +2686,8 @@ static void CreateOverlay() {
     SetForegroundWindow(g_hwndOverlay);
     SetFocus(g_hwndOverlay);
 }
-
+#pragma endregion
+#pragma region Message-only window (hotkey)
 // =========================================================
 // Message-only window (hotkey)
 // =========================================================
@@ -2893,7 +2903,8 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-
+#pragma endregion
+#pragma region Entry point
 // =========================================================
 // Entry point
 // =========================================================
@@ -2950,3 +2961,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
     }
     return 0;
 }
+
+#pragma endregion
+
+
