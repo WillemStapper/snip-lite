@@ -17,6 +17,7 @@
 CMakeUserPresets.json
 
 # Misc
+/web/
 /tools/
 /docs/GitHub*
 chat-pack*
