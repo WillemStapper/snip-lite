@@ -967,69 +967,14 @@ static bool CopyBitmapToClipboardAlphaV5(HBITMAP hbmp) {
     return true;
 }
 
-static bool SaveBitmapAsBmpFile(HBITMAP hbmp, const std::wstring& filePath) {
-    if (!hbmp) return false;
-
-    DIBSECTION ds{};
-    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || ds.dsBm.bmBits == nullptr) return false;
-
-    const int w = ds.dsBmih.biWidth;
-    const int h = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
-    const bool srcTopDown = (ds.dsBmih.biHeight < 0);
-
-    const DWORD stride = (DWORD)ds.dsBm.bmWidthBytes;
-    const DWORD imageSize = stride * (DWORD)h;
-
-    BITMAPFILEHEADER bfh{};
-    BITMAPINFOHEADER bih{};
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = w;
-    bih.biHeight = h;                 // BMP schrijven als bottom-up
-    bih.biPlanes = 1;
-    bih.biBitCount = 32;
-    bih.biCompression = BI_RGB;
-    bih.biSizeImage = imageSize;
-
-    bfh.bfType = 0x4D42;              // 'BM'
-    bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
-    bfh.bfSize = bfh.bfOffBits + imageSize;
-
-    HANDLE hf = CreateFileW(filePath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hf == INVALID_HANDLE_VALUE) return false;
-
-    DWORD written = 0;
-    bool ok = true;
-
-    ok = ok && WriteFile(hf, &bfh, sizeof(bfh), &written, nullptr);
-    ok = ok && WriteFile(hf, &bih, sizeof(bih), &written, nullptr);
-
-    const BYTE* bits = (const BYTE*)ds.dsBm.bmBits;
-
-    // BMP (bottom-up) verwacht eerst onderste scanline.
-    if (ok) {
-        for (int row = 0; row < h; ++row) {
-            const int srcRow = srcTopDown ? (h - 1 - row) : row;
-            const BYTE* pRow = bits + (SIZE_T)srcRow * stride;
-            ok = ok && WriteFile(hf, pRow, stride, &written, nullptr);
-            if (!ok) break;
-        }
-    }
-
-    CloseHandle(hf);
-    return ok;
-}
-
 static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
     if (!hbmp) return false;
-    if (fmt != SaveFormat::Png && fmt != SaveFormat::Jpeg) return false;
 
     bool needUninit = false;
     CoInitForDialog(needUninit);
 
     IWICImagingFactory* factory = nullptr;
-    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-        IID_PPV_ARGS(&factory));
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
     if (FAILED(hr) || !factory) {
         if (needUninit) CoUninitialize();
         return false;
@@ -1039,7 +984,11 @@ static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat
     hr = factory->CreateStream(&stream);
     if (SUCCEEDED(hr)) hr = stream->InitializeFromFilename(filePath.c_str(), GENERIC_WRITE);
 
-    const GUID container = (fmt == SaveFormat::Png) ? GUID_ContainerFormatPng : GUID_ContainerFormatJpeg;
+    // Bepaal de juiste container format
+    GUID container;
+    if (fmt == SaveFormat::Png) container = GUID_ContainerFormatPng;
+    else if (fmt == SaveFormat::Jpeg) container = GUID_ContainerFormatJpeg;
+    else container = GUID_ContainerFormatBmp;
 
     IWICBitmapEncoder* encoder = nullptr;
     if (SUCCEEDED(hr)) hr = factory->CreateEncoder(container, nullptr, &encoder);
@@ -1055,8 +1004,7 @@ static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat
         pb.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
         VARIANT v{};
         VariantInit(&v);
-        v.vt = VT_R4;
-        v.fltVal = 0.92f;
+        v.vt = VT_R4; v.fltVal = 0.92f;
         bag->Write(1, &pb, &v);
         VariantClear(&v);
     }
@@ -1072,7 +1020,8 @@ static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat
 
     if (SUCCEEDED(hr)) hr = frame->SetSize((UINT)w, (UINT)h);
 
-    GUID pf = (fmt == SaveFormat::Jpeg) ? GUID_WICPixelFormat24bppBGR : GUID_WICPixelFormat32bppBGRA;
+    // Bepaal pixel format (JPEG/BMP: 24bpp, PNG: 32bpp BGRA)
+    GUID pf = (fmt == SaveFormat::Png) ? GUID_WICPixelFormat32bppBGRA : GUID_WICPixelFormat24bppBGR;
     if (SUCCEEDED(hr)) {
         GUID setPf = pf;
         frame->SetPixelFormat(&setPf);
@@ -1104,13 +1053,9 @@ static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat
     return SUCCEEDED(hr);
 }
 
+// Simpele wrapper omdat we alles met WIC afhandelen
 static bool SaveBitmapFile(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
-    switch (fmt) {
-    case SaveFormat::Png:  return SaveBitmapWic(hbmp, filePath, fmt);
-    case SaveFormat::Jpeg: return SaveBitmapWic(hbmp, filePath, fmt);
-    case SaveFormat::Bmp:  return SaveBitmapAsBmpFile(hbmp, filePath);
-    default:               return false;
-    }
+    return SaveBitmapWic(hbmp, filePath, fmt);
 }
 
 static std::vector<POINT> LassoSmoothClosed_Chaikin(std::vector<POINT> pts, int iterations)
