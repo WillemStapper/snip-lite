@@ -810,21 +810,21 @@ static bool CaptureRectToBitmap(const RECT& screenRect, HBITMAP& outBmp, int& ou
     return true;
 }
 
-static bool CopyBitmapToClipboard(HBITMAP hbmp) {
+/*
+*/
+
+static bool CopyToClipboard(HBITMAP hbmp, bool useAlphaV5) {
     if (!hbmp) return false;
 
     DIBSECTION ds{};
-    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || ds.dsBm.bmBits == nullptr) {
-        return false;
-    }
+    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || ds.dsBm.bmBits == nullptr) return false;
 
     const int w = ds.dsBmih.biWidth;
     const int absH = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
-
     const int srcStride = ds.dsBm.bmWidthBytes;
     const int dstStride = w * 4;
 
-    const SIZE_T headerSize = sizeof(BITMAPINFOHEADER);
+    const SIZE_T headerSize = useAlphaV5 ? sizeof(BITMAPV5HEADER) : sizeof(BITMAPINFOHEADER);
     const SIZE_T bitsSize = (SIZE_T)dstStride * (SIZE_T)absH;
     const SIZE_T totalSize = headerSize + bitsSize;
 
@@ -834,138 +834,56 @@ static bool CopyBitmapToClipboard(HBITMAP hbmp) {
     BYTE* p = (BYTE*)GlobalLock(hMem);
     if (!p) { GlobalFree(hMem); return false; }
 
-    BITMAPINFOHEADER bih{};
-    bih.biSize = sizeof(BITMAPINFOHEADER);
-    bih.biWidth = w;
-    bih.biHeight = absH;               // bottom-up
-    bih.biPlanes = 1;
-    bih.biBitCount = 32;
-    bih.biCompression = BI_RGB;
-    bih.biSizeImage = (DWORD)bitsSize;
-
-    std::memcpy(p, &bih, sizeof(bih));
+    if (useAlphaV5) {
+        BITMAPV5HEADER bvh{};
+        bvh.bV5Size = sizeof(BITMAPV5HEADER);
+        bvh.bV5Width = w; bvh.bV5Height = absH;
+        bvh.bV5Planes = 1; bvh.bV5BitCount = 32; bvh.bV5Compression = BI_BITFIELDS;
+        bvh.bV5RedMask = 0x00FF0000; bvh.bV5GreenMask = 0x0000FF00;
+        bvh.bV5BlueMask = 0x000000FF; bvh.bV5AlphaMask = 0xFF000000;
+        bvh.bV5CSType = LCS_sRGB;
+        std::memcpy(p, &bvh, sizeof(bvh));
+    }
+    else {
+        BITMAPINFOHEADER bih{};
+        bih.biSize = sizeof(BITMAPINFOHEADER);
+        bih.biWidth = w; bih.biHeight = absH;
+        bih.biPlanes = 1; bih.biBitCount = 32; bih.biCompression = BI_RGB;
+        bih.biSizeImage = (DWORD)bitsSize;
+        std::memcpy(p, &bih, sizeof(bih));
+    }
 
     const BYTE* srcBits = (const BYTE*)ds.dsBm.bmBits;
     BYTE* dstBits = p + headerSize;
-
-    const bool srcTopDown = (ds.dsBmih.biHeight < 0);
-    const int copyBytes = (srcStride < dstStride) ? srcStride : dstStride;
-
-    // schrijf bottom-up: bovenste rij komt onderaan in memory
-    for (int y = 0; y < absH; ++y) {
-        const int srcY = srcTopDown ? y : (absH - 1 - y); // lees "van boven naar beneden"
-        const int dstY = (absH - 1 - y);
-
-        const BYTE* srcRow = srcBits + (SIZE_T)srcY * (SIZE_T)srcStride;
-        BYTE* dstRow = dstBits + (SIZE_T)dstY * (SIZE_T)dstStride;
-
-        std::memcpy(dstRow, srcRow, (size_t)copyBytes);
-        if (copyBytes < dstStride) {
-            std::memset(dstRow + copyBytes, 0, (size_t)(dstStride - copyBytes));
-        }
-    }
-
-    GlobalUnlock(hMem);
-
-    if (!OpenClipboard(nullptr)) {
-        GlobalFree(hMem);
-        return false;
-    }
-
-    EmptyClipboard();
-
-    bool ok = (SetClipboardData(CF_DIB, hMem) != nullptr);
-    if (!ok) {
-        CloseClipboard();
-        GlobalFree(hMem);
-        return false;
-    }
-
-    // Extra compatibiliteit: CF_BITMAP ook aanbieden
-    HBITMAP copyBmp = (HBITMAP)CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-    if (copyBmp) {
-        if (!SetClipboardData(CF_BITMAP, copyBmp)) {
-            DeleteObject(copyBmp);
-        }
-    }
-
-    CloseClipboard();
-    return true;
-}
-
-#pragma comment(lib, "Msimg32.lib")
-
-static bool CopyBitmapToClipboardAlphaV5(HBITMAP hbmp) {
-    if (!hbmp) return false;
-
-    DIBSECTION ds{};
-    if (GetObjectW(hbmp, sizeof(ds), &ds) == 0 || ds.dsBm.bmBits == nullptr) return false;
-
-    const int w = ds.dsBmih.biWidth;
-    const int absH = (ds.dsBmih.biHeight < 0) ? -ds.dsBmih.biHeight : ds.dsBmih.biHeight;
-
-    const int srcStride = ds.dsBm.bmWidthBytes;
-    const int dstStride = w * 4;
-
-    const SIZE_T headerSize = sizeof(BITMAPV5HEADER);
-    const SIZE_T bitsSize = (SIZE_T)dstStride * (SIZE_T)absH;
-    const SIZE_T totalSize = headerSize + bitsSize;
-
-    HGLOBAL hMemV5 = GlobalAlloc(GMEM_MOVEABLE, totalSize);
-    if (!hMemV5) return false;
-
-    BYTE* p = (BYTE*)GlobalLock(hMemV5);
-    if (!p) { GlobalFree(hMemV5); return false; }
-
-    BITMAPV5HEADER bvh{};
-    bvh.bV5Size = sizeof(BITMAPV5HEADER);
-    bvh.bV5Width = w;
-    bvh.bV5Height = absH; // bottom-up
-    bvh.bV5Planes = 1;
-    bvh.bV5BitCount = 32;
-    bvh.bV5Compression = BI_BITFIELDS;
-    bvh.bV5RedMask = 0x00FF0000;
-    bvh.bV5GreenMask = 0x0000FF00;
-    bvh.bV5BlueMask = 0x000000FF;
-    bvh.bV5AlphaMask = 0xFF000000;
-    bvh.bV5CSType = LCS_sRGB;
-
-    std::memcpy(p, &bvh, sizeof(bvh));
-
-    const BYTE* srcBits = (const BYTE*)ds.dsBm.bmBits;
-    BYTE* dstBits = p + headerSize;
-
     const bool srcTopDown = (ds.dsBmih.biHeight < 0);
     const int copyBytes = (srcStride < dstStride) ? srcStride : dstStride;
 
     for (int y = 0; y < absH; ++y) {
         const int srcY = srcTopDown ? y : (absH - 1 - y);
         const int dstY = (absH - 1 - y);
-
-        const BYTE* srcRow = srcBits + (SIZE_T)srcY * (SIZE_T)srcStride;
-        BYTE* dstRow = dstBits + (SIZE_T)dstY * (SIZE_T)dstStride;
-
-        std::memcpy(dstRow, srcRow, (size_t)copyBytes);
-        if (copyBytes < dstStride) std::memset(dstRow + copyBytes, 0, (size_t)(dstStride - copyBytes));
+        std::memcpy(dstBits + (SIZE_T)dstY * dstStride, srcBits + (SIZE_T)srcY * srcStride, (size_t)copyBytes);
+        if (copyBytes < dstStride) std::memset(dstBits + (SIZE_T)dstY * dstStride + copyBytes, 0, (size_t)(dstStride - copyBytes));
     }
 
-    GlobalUnlock(hMemV5);
+    GlobalUnlock(hMem);
 
-    if (!OpenClipboard(nullptr)) { GlobalFree(hMemV5); return false; }
+    if (!OpenClipboard(nullptr)) { GlobalFree(hMem); return false; }
     EmptyClipboard();
 
-    bool ok = (SetClipboardData(CF_DIBV5, hMemV5) != nullptr);
+    bool ok = (SetClipboardData(useAlphaV5 ? CF_DIBV5 : CF_DIB, hMem) != nullptr);
 
-    // fallback: ook CF_BITMAP aanbieden
     HBITMAP copyBmp = (HBITMAP)CopyImage(hbmp, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION);
-    if (copyBmp) {
-        if (!SetClipboardData(CF_BITMAP, copyBmp)) DeleteObject(copyBmp);
-    }
+    if (copyBmp && !SetClipboardData(CF_BITMAP, copyBmp)) DeleteObject(copyBmp);
 
     CloseClipboard();
-    if (!ok) { GlobalFree(hMemV5); return false; }
-    return true;
+    if (!ok) GlobalFree(hMem);
+    return ok;
 }
+
+#pragma comment(lib, "Msimg32.lib")
+
+/*
+*/
 
 static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
     if (!hbmp) return false;
@@ -2005,7 +1923,7 @@ static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr, HW
     FreeCapture();
     g_captureHasAlpha = false;  // belangrijk: normale captures zijn opaque
     const bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
-    const bool clipOk = capOk ? CopyBitmapToClipboard(g_captureBmp) : false;
+    const bool clipOk = capOk ? CopyToClipboard(g_captureBmp, false);
 
     if (clipOk) {
         DestroyOverlay();
@@ -2100,7 +2018,7 @@ static void PolygonFinalize(HWND hwnd) {
     // Polygon is “strak”; feather optioneel. Zet op 1 als je het net iets zachter wil.
     // FeatherAlpha3x3(g_captureBmp, 1);
 
-    bool clipOk = CopyBitmapToClipboardAlphaV5(g_captureBmp);
+    bool clipOk = CopyToClipboard(g_captureBmp, true);
     if (clipOk) {
         DestroyOverlay();
         g_tempEditFile.clear();
@@ -2344,7 +2262,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             g_captureHasAlpha = true;
             FeatherAlpha3x3(g_captureBmp, 1);  // 1 = subtiel; 2 = zachter
 
-            bool clipOk = CopyBitmapToClipboardAlphaV5(g_captureBmp);
+            bool clipOk = CopyToClipboard(g_captureBmp, true);
 
             if (clipOk) {
                 DestroyOverlay();
