@@ -1777,12 +1777,6 @@ static void DrawOutlinedCrosshair(HDC hdc, int x, int y)
     DeleteObject(penW);
 }
 
-static void LassoReset() {
-    g_lassoSelecting = false;
-    g_lassoPtsClient.clear();
-    ZeroMemory(&g_lassoBoundsClient, sizeof(g_lassoBoundsClient));
-}
-
 static bool IsShiftDown() {
     return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 }
@@ -1816,12 +1810,21 @@ static POINT SnapPoint45(POINT origin, POINT raw) {
     return out;
 }
 
-static void PolyReset() {
-    g_polySelecting = false;
-    g_polyPtsClient.clear();
-    ZeroMemory(&g_polyBoundsClient, sizeof(g_polyBoundsClient));
-    g_polyHoverValid = false;
-    g_polyHoverClient = { 0,0 };
+static void ShapeAddPoint(HWND hwnd, int x, int y, std::vector<POINT>& pts, RECT& bounds) {
+    POINT p{ x, y };
+    pts.push_back(p);
+
+    // Update bounds
+    if (pts.size() == 1) {
+        bounds = { x, y, x, y };
+    }
+    else {
+        if (x < bounds.left)   bounds.left = x;
+        if (x > bounds.right)  bounds.right = x;
+        if (y < bounds.top)    bounds.top = y;
+        if (y > bounds.bottom) bounds.bottom = y;
+    }
+    InvalidateRect(hwnd, nullptr, FALSE);
 }
 
 static void PolyRecalcBounds() {
@@ -1841,24 +1844,6 @@ static void PolyRecalcBounds() {
     g_polyBoundsClient = { minx, miny, maxx + 1, maxy + 1 };
 }
 
-static void PolyAddPoint(POINT p) {
-    if (!g_polyPtsClient.empty()) {
-        POINT last = g_polyPtsClient.back();
-        if (last.x == p.x && last.y == p.y) return;
-    }
-    g_polyPtsClient.push_back(p);
-
-    if (g_polyPtsClient.size() == 1) {
-        g_polyBoundsClient = { p.x, p.y, p.x + 1, p.y + 1 };
-    }
-    else {
-        if (p.x < g_polyBoundsClient.left) g_polyBoundsClient.left = p.x;
-        if (p.y < g_polyBoundsClient.top) g_polyBoundsClient.top = p.y;
-        if (p.x + 1 > g_polyBoundsClient.right) g_polyBoundsClient.right = p.x + 1;
-        if (p.y + 1 > g_polyBoundsClient.bottom) g_polyBoundsClient.bottom = p.y + 1;
-    }
-}
-
 static void PolyUndoLast() {
     if (g_polyPtsClient.empty()) return;
     g_polyPtsClient.pop_back();
@@ -1867,6 +1852,12 @@ static void PolyUndoLast() {
         return;
     }
     PolyRecalcBounds();
+}
+
+static void ShapeReset(std::vector<POINT>& pts, RECT& bounds, bool* selectingFlag = nullptr) {
+    pts.clear();
+    bounds = { 0, 0, 0, 0 };
+    if (selectingFlag) *selectingFlag = false;
 }
 
 static void DestroyOverlay() {
@@ -1931,27 +1922,6 @@ static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr, HW
     ShowWindow(hwndOverlay, SW_SHOW);
     InvalidateRect(hwndOverlay, nullptr, TRUE);
     return false;
-}
-
-static void LassoAddPoint(POINT p) {
-    // punten uitdunnen: scheelt CPU bij masken
-    if (!g_lassoPtsClient.empty()) {
-        POINT last = g_lassoPtsClient.back();
-        int dx = p.x - last.x, dy = p.y - last.y;
-        if (dx * dx + dy * dy < 9) return; // <3px: negeren
-    }
-
-    g_lassoPtsClient.push_back(p);
-
-    if (g_lassoPtsClient.size() == 1) {
-        g_lassoBoundsClient = { p.x, p.y, p.x + 1, p.y + 1 };
-    }
-    else {
-        if (p.x < g_lassoBoundsClient.left)   g_lassoBoundsClient.left = p.x;
-        if (p.y < g_lassoBoundsClient.top)    g_lassoBoundsClient.top = p.y;
-        if (p.x + 1 > g_lassoBoundsClient.right)  g_lassoBoundsClient.right = p.x + 1;
-        if (p.y + 1 > g_lassoBoundsClient.bottom) g_lassoBoundsClient.bottom = p.y + 1;
-    }
 }
 
 static void PolygonFinalize(HWND hwnd) {
@@ -2027,62 +1997,71 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
 
     case WM_RBUTTONUP:
-        if (g_polySelecting) {
-            PolyUndoLast();
-            InvalidateRect(hwnd, nullptr, TRUE);
-            return 0;
+    {
+        // Als we bezig waren met een vrije vorm of polygoon, stop dan de huidige selectie
+        if (g_lassoSelecting) {
+            ShapeReset(g_lassoPtsClient, g_lassoBoundsClient, &g_lassoSelecting);
         }
-        if (g_lassoSelecting) return 0;
-        if (g_selecting) return 0;
-        ShowModeMenu(hwnd);
+        if (g_polySelecting) {
+            ShapeReset(g_polyPtsClient, g_polyBoundsClient, &g_polySelecting);
+            g_polyHoverValid = false;
+        }
+
+        // Voor de rechthoek-modus (indien je die vlag gebruikt)
+        g_isSelecting = false;
+
+        ReleaseCapture();
         InvalidateRect(hwnd, nullptr, TRUE);
         return 0;
+    }
 
     case WM_LBUTTONDOWN:
         if (g_mode == Mode::Polygon) {
             SetFocus(hwnd);
-
             POINT raw{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
 
             if (!g_polySelecting) {
                 SetCapture(hwnd);
-                PolyReset();
+                // Directe reset via lambda/inline
+                g_polyPtsClient.clear();
+                g_polyBoundsClient = { 0,0,0,0 };
                 g_polySelecting = true;
 
                 g_polyHoverClient = raw;
                 g_polyHoverValid = true;
 
-                PolyAddPoint(raw);
-                InvalidateRect(hwnd, nullptr, TRUE);
+                ShapeAddPoint(hwnd, raw.x, raw.y, g_polyPtsClient, g_polyBoundsClient);
                 return 0;
             }
 
-            // bestaand polygon: bepaal klikpunt (Shift = snap 45° t.o.v. laatste punt)
             POINT p = raw;
             if (!g_polyPtsClient.empty() && IsShiftDown()) {
                 p = SnapPoint45(g_polyPtsClient.back(), raw);
             }
 
-            // close door te klikken dichtbij het eerste punt
             if (g_polyPtsClient.size() >= 3 && NearPoint(p, g_polyPtsClient.front(), 10)) {
-                PolygonFinalize(hwnd);
+                // Gebruik de nieuwe helper die we eerder maakten
+                FinalizeFreeformCapture(hwnd, g_polyPtsClient, g_polyBoundsClient, false, []() {
+                    g_polySelecting = false;
+                    g_polyPtsClient.clear();
+                    g_polyHoverValid = false;
+                    });
                 return 0;
             }
 
-            PolyAddPoint(p);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            ShapeAddPoint(hwnd, p.x, p.y, g_polyPtsClient, g_polyBoundsClient);
             return 0;
         }
 
         if (g_mode == Mode::Freestyle) {
             SetCapture(hwnd);
-            LassoReset();
+            // Directe reset
+            g_lassoPtsClient.clear();
+            g_lassoBoundsClient = { 0,0,0,0 };
             g_lassoSelecting = true;
 
             POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            LassoAddPoint(p);
-
-            InvalidateRect(hwnd, nullptr, TRUE);
+            ShapeAddPoint(hwnd, p.x, p.y, g_lassoPtsClient, g_lassoBoundsClient);
             return 0;
         }
 
@@ -2139,9 +2118,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         if (g_mode == Mode::Freestyle && g_lassoSelecting) {
-            POINT p{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-            LassoAddPoint(p);
-            InvalidateRect(hwnd, nullptr, TRUE);
+            ShapeAddPoint(hwnd, GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam), g_lassoPtsClient, g_lassoBoundsClient);
             return 0;
         }
 
