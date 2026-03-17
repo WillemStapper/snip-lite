@@ -199,7 +199,7 @@ static std::wstring g_tempEditFile;    // alleen voor huidige preview/capture
 // -----------------------------
 static int g_namePreset = 1;              // 1..4
 static ULONGLONG g_lastNameKey = 0;       // yyyymmddhhmmss
-static int g_nameCounter = 0;             // 1..999 (reset per second)
+static int g_nameCounter = 0;             // 1..999 (reset per date)
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
@@ -2208,7 +2208,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             picked = PickTopWindowAtPoint(pt, sr);
             have = (picked != nullptr);
         }
-else if (g_mode == Mode::Monitor) {
+        else if (g_mode == Mode::Monitor) {
             have = GetMonitorRectAtPoint(pt, sr);
         }
         else {
@@ -2287,111 +2287,63 @@ else if (g_mode == Mode::Monitor) {
         PAINTSTRUCT ps{};
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        RECT r{};
-        GetClientRect(hwnd, &r);
+        RECT r{}; GetClientRect(hwnd, &r);
         HBRUSH bg = CreateSolidBrush(RGB(0, 0, 0));
         FillRect(hdc, &r, bg);
         DeleteObject(bg);
 
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, RGB(255, 255, 255));
-        RECT tr = r;
-        tr.left += 20; tr.top += 20;
+        RECT tr = r; tr.left += 20; tr.top += 20;
         DrawTextW(hdc, ModeText(g_mode), -1, &tr, DT_LEFT | DT_TOP | DT_SINGLELINE);
 
-        if (g_mode == Mode::Freestyle && (g_lassoSelecting || g_lassoPtsClient.size() >= 2)) {
-            if (g_lassoPtsClient.size() >= 2) {
-                HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-                HGDIOBJ oldPen = SelectObject(hdc, pen);
-                HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        // Eén keer pen en brush klaarzetten voor alle witte vormen
+        HPEN whitePen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
+        HGDIOBJ oldPen = SelectObject(hdc, whitePen);
+        HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-                Polyline(hdc, g_lassoPtsClient.data(), (int)g_lassoPtsClient.size());
-
-                // optioneel: bounding box (handig bij debug)
-                // Rectangle(hdc, g_lassoBoundsClient.left, g_lassoBoundsClient.top,
-                //           g_lassoBoundsClient.right, g_lassoBoundsClient.bottom);
-
-                SelectObject(hdc, oldBrush);
-                SelectObject(hdc, oldPen);
-                DeleteObject(pen);
-            }
+        if (g_mode == Mode::Freestyle && g_lassoPtsClient.size() >= 2) {
+            Polyline(hdc, g_lassoPtsClient.data(), (int)g_lassoPtsClient.size());
         }
+        else if (g_mode == Mode::Polygon && !g_polyPtsClient.empty()) {
+            if (g_polyPtsClient.size() >= 2) Polyline(hdc, g_polyPtsClient.data(), (int)g_polyPtsClient.size());
 
-        if (g_mode == Mode::Polygon && (g_polySelecting || g_polyPtsClient.size() >= 1)) {
-            HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
-
-            // vaste edges
-            if (g_polyPtsClient.size() >= 2) {
-                Polyline(hdc, g_polyPtsClient.data(), (int)g_polyPtsClient.size());
-            }
-
-            // rubber-band (laatste punt -> hover), met “close hint” (hover -> eerste)
-            if (g_polySelecting && g_polyHoverValid && !g_polyPtsClient.empty()) {
+            if (g_polySelecting && g_polyHoverValid) {
                 POINT last = g_polyPtsClient.back();
                 MoveToEx(hdc, last.x, last.y, nullptr);
                 LineTo(hdc, g_polyHoverClient.x, g_polyHoverClient.y);
-
                 if (g_polyPtsClient.size() >= 3 && NearPoint(g_polyHoverClient, g_polyPtsClient.front(), 10)) {
-                    MoveToEx(hdc, g_polyHoverClient.x, g_polyHoverClient.y, nullptr);
                     LineTo(hdc, g_polyPtsClient.front().x, g_polyPtsClient.front().y);
                 }
             }
-
-            // vertices (kleine cirkels)
-            SelectObject(hdc, GetStockObject(NULL_BRUSH));
-            constexpr int kVtxR = 3;
             for (auto p : g_polyPtsClient) {
-                Ellipse(hdc,
-                    p.x - kVtxR, p.y - kVtxR,
-                    p.x + kVtxR + 1, p.y + kVtxR + 1);
+                Ellipse(hdc, p.x - 3, p.y - 3, p.x + 4, p.y + 4);
             }
-
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
-            DeleteObject(pen);
         }
-
-        if (g_mode == Mode::Region && g_selecting) {
-
-            // clamp naar client
-            RECT client{};
-            GetClientRect(hwnd, &client);
-
-            RECT s = g_selRectClient;
+        else if (g_mode == Mode::Region && g_selecting) {
             RECT ss{};
-            if (IntersectRect(&ss, &s, &client)) {
-
-                // (A) Oplichten: vulling binnen selectie
-                // Kies een kleur die duidelijk lichter is dan jouw overlay-achtergrond
+            if (IntersectRect(&ss, &g_selRectClient, &r)) {
                 HBRUSH lit = CreateSolidBrush(RGB(60, 60, 60));
                 FillRect(hdc, &ss, lit);
                 DeleteObject(lit);
-
-                // (B) Witte outline zoals nu
-                HPEN pen = CreatePen(PS_SOLID, 2, RGB(255, 255, 255));
-                HGDIOBJ oldPen = SelectObject(hdc, pen);
-                HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
                 Rectangle(hdc, ss.left, ss.top, ss.right, ss.bottom);
-
-                SelectObject(hdc, oldBrush);
-                SelectObject(hdc, oldPen);
-                DeleteObject(pen);
             }
         }
         else if (g_hoverValid) {
-            HPEN pen = CreatePen(PS_SOLID, 2, RGB(100, 200, 255));
-            HGDIOBJ oldPen = SelectObject(hdc, pen);
-            HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+            // Alleen hier even wisselen van pen voor de hover-kleur
+            HPEN bluePen = CreatePen(PS_SOLID, 2, RGB(100, 200, 255));
+            SelectObject(hdc, bluePen);
             Rectangle(hdc, g_hoverRectClient.left, g_hoverRectClient.top, g_hoverRectClient.right, g_hoverRectClient.bottom);
-            SelectObject(hdc, oldBrush);
-            SelectObject(hdc, oldPen);
-            DeleteObject(pen);
+            SelectObject(hdc, whitePen); // terug naar wit
+            DeleteObject(bluePen);
         }
-        if (g_cursorValid) {
-            DrawOutlinedCrosshair(hdc, g_cursorPt.x, g_cursorPt.y);
-        }
+
+        // Cleanup witte pen
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(whitePen);
+
+        if (g_cursorValid) DrawOutlinedCrosshair(hdc, g_cursorPt.x, g_cursorPt.y);
 
         EndPaint(hwnd, &ps);
         return 0;
