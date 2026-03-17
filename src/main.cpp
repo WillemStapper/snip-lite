@@ -810,9 +810,6 @@ static bool CaptureRectToBitmap(const RECT& screenRect, HBITMAP& outBmp, int& ou
     return true;
 }
 
-/*
-*/
-
 static bool CopyToClipboard(HBITMAP hbmp, bool useAlphaV5) {
     if (!hbmp) return false;
 
@@ -881,9 +878,6 @@ static bool CopyToClipboard(HBITMAP hbmp, bool useAlphaV5) {
 }
 
 #pragma comment(lib, "Msimg32.lib")
-
-/*
-*/
 
 static bool SaveBitmapWic(HBITMAP hbmp, const std::wstring& filePath, SaveFormat fmt) {
     if (!hbmp) return false;
@@ -1788,6 +1782,7 @@ static void LassoReset() {
     g_lassoPtsClient.clear();
     ZeroMemory(&g_lassoBoundsClient, sizeof(g_lassoBoundsClient));
 }
+
 static bool IsShiftDown() {
     return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 }
@@ -1960,54 +1955,40 @@ static void LassoAddPoint(POINT p) {
 }
 
 static void PolygonFinalize(HWND hwnd) {
-    ReleaseCapture();
     g_polySelecting = false;
+    FinalizeFreeformCapture(hwnd, g_polyPtsClient, g_polyBoundsClient, false, PolyReset);
+}
 
-    if (g_polyPtsClient.size() < 3) {
+static void FinalizeFreeformCapture(HWND hwnd, const std::vector<POINT>& ptsClient, RECT boundsClient, bool doFeather, auto resetCallback) {
+    ReleaseCapture();
+
+    if (ptsClient.size() < 3) {
         MessageBeep(MB_ICONWARNING);
-        PolyReset();
+        resetCallback();
         InvalidateRect(hwnd, nullptr, TRUE);
         return;
     }
 
-    // bounds iets ruimer
-    RECT b = g_polyBoundsClient;
-    b.left -= 2; b.top -= 2; b.right += 2; b.bottom += 2;
-
-    if ((b.right - b.left) < 5 || (b.bottom - b.top) < 5) {
+    boundsClient.left -= 2; boundsClient.top -= 2; boundsClient.right += 2; boundsClient.bottom += 2;
+    if ((boundsClient.right - boundsClient.left) < 5 || (boundsClient.bottom - boundsClient.top) < 5) {
         MessageBeep(MB_ICONWARNING);
-        PolyReset();
+        resetCallback();
         InvalidateRect(hwnd, nullptr, TRUE);
         return;
     }
 
     RECT ow{};
     GetWindowRect(hwnd, &ow);
-
-    RECT sr{
-        ow.left + b.left,
-        ow.top + b.top,
-        ow.left + b.right,
-        ow.top + b.bottom
-    };
+    RECT sr{ ow.left + boundsClient.left, ow.top + boundsClient.top, ow.left + boundsClient.right, ow.top + boundsClient.bottom };
 
     ShowWindow(hwnd, SW_HIDE);
     Sleep(20);
     GdiFlush();
-
     FreeCapture();
     g_captureHasAlpha = false;
 
-    bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
-    if (!capOk) {
-        MessageBeep(MB_ICONERROR);
-        ShowWindow(hwnd, SW_SHOW);
-        InvalidateRect(hwnd, nullptr, TRUE);
-        return;
-    }
-
-    // mask: alpha buiten polygon = 0
-    if (!ApplyLassoAlphaMask(g_captureBmp, g_polyPtsClient, b)) {
+    if (!CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH) ||
+        !ApplyLassoAlphaMask(g_captureBmp, ptsClient, boundsClient)) {
         MessageBeep(MB_ICONERROR);
         ShowWindow(hwnd, SW_SHOW);
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -2015,11 +1996,9 @@ static void PolygonFinalize(HWND hwnd) {
     }
 
     g_captureHasAlpha = true;
-    // Polygon is “strak”; feather optioneel. Zet op 1 als je het net iets zachter wil.
-    // FeatherAlpha3x3(g_captureBmp, 1);
+    if (doFeather) FeatherAlpha3x3(g_captureBmp, 1);
 
-    bool clipOk = CopyToClipboard(g_captureBmp, true);
-    if (clipOk) {
+    if (CopyToClipboard(g_captureBmp, true)) { // Let op de gewijzigde CopyToClipboard aanroep!
         DestroyOverlay();
         g_tempEditFile.clear();
         CreatePreviewWindow();
@@ -2029,8 +2008,7 @@ static void PolygonFinalize(HWND hwnd) {
         ShowWindow(hwnd, SW_SHOW);
         InvalidateRect(hwnd, nullptr, TRUE);
     }
-
-    PolyReset();
+    resetCallback();
 }
 
 static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2205,77 +2183,9 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return 0;
         }
         if (g_mode == Mode::Freestyle && g_lassoSelecting) {
-            ReleaseCapture();
             g_lassoSelecting = false;
-
-            if (g_lassoPtsClient.size() < 3) {
-                MessageBeep(MB_ICONWARNING);
-                LassoReset();
-                InvalidateRect(hwnd, nullptr, TRUE);
-                return 0;
-            }
-
-            // bounds iets ruimer
-            RECT b = g_lassoBoundsClient;
-            b.left -= 2; b.top -= 2; b.right += 2; b.bottom += 2;
-
-            if ((b.right - b.left) < 5 || (b.bottom - b.top) < 5) {
-                MessageBeep(MB_ICONWARNING);
-                LassoReset();
-                InvalidateRect(hwnd, nullptr, TRUE);
-                return 0;
-            }
-
-            RECT ow{};
-            GetWindowRect(hwnd, &ow);
-
-            RECT sr{
-                ow.left + b.left,
-                ow.top + b.top,
-                ow.left + b.right,
-                ow.top + b.bottom
-            };
-
-            ShowWindow(hwnd, SW_HIDE);
-            Sleep(20);
-            GdiFlush();
-
-            FreeCapture();
-            g_captureHasAlpha = false;
-
-            bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
-            if (!capOk) {
-                MessageBeep(MB_ICONERROR);
-                ShowWindow(hwnd, SW_SHOW);
-                InvalidateRect(hwnd, nullptr, TRUE);
-                return 0;
-            }
-
-            // mask: alpha buiten lasso = 0
             auto smoothPts = LassoSmoothClosed_Chaikin(g_lassoPtsClient, 2);
-            if (!ApplyLassoAlphaMask(g_captureBmp, smoothPts, b)) {
-                MessageBeep(MB_ICONERROR);
-                ShowWindow(hwnd, SW_SHOW);
-                InvalidateRect(hwnd, nullptr, TRUE);
-                return 0;
-            }
-            g_captureHasAlpha = true;
-            FeatherAlpha3x3(g_captureBmp, 1);  // 1 = subtiel; 2 = zachter
-
-            bool clipOk = CopyToClipboard(g_captureBmp, true);
-
-            if (clipOk) {
-                DestroyOverlay();
-                g_tempEditFile.clear();
-                CreatePreviewWindow();
-            }
-            else {
-                MessageBeep(MB_ICONERROR);
-                ShowWindow(hwnd, SW_SHOW);
-                InvalidateRect(hwnd, nullptr, TRUE);
-            }
-
-            LassoReset();
+            FinalizeFreeformCapture(hwnd, smoothPts, g_lassoBoundsClient, true, LassoReset);
             return 0;
         }
 
