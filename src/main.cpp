@@ -19,7 +19,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
-#include <wincodec.h>     // PNG/JPEG via WIC
+#include <wincodec.h>     // bestand opslag via WIC
 #pragma comment(lib, "windowscodecs.lib")
 #include <dwmapi.h>
 #pragma comment(lib, "dwmapi.lib")
@@ -1818,7 +1818,6 @@ static void ShapeReset(std::vector<POINT>& pts, RECT& bounds, bool* selectingFla
     if (selectingFlag) *selectingFlag = false;
 }
 
-// De 'bruggen' voor de bestaande 7 aanroepen:
 static void LassoReset() {
     ShapeReset(g_lassoPtsClient, g_lassoBoundsClient, &g_lassoSelecting);
 }
