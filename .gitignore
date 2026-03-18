@@ -17,9 +17,12 @@
 CMakeUserPresets.json
 
 # Misc
+/src/res/icons
 /web/
 /tools/
 /docs/GitHub*
 chat-pack*
 *.user
 *.log
+*.old
+

@@ -36,20 +36,20 @@
 // -----------------------------
 static constexpr int  HOTKEY_ID = 1;
 static constexpr UINT HOTKEY_MOD = MOD_CONTROL | MOD_ALT;
-static constexpr UINT HOTKEY_VK = 'S';            // Ctrl+Alt+S
+static constexpr UINT HOTKEY_VK = 'S';   // Ctrl+Alt+S
 
 // -----------------------------
 // Modes
 // -----------------------------
 enum class Mode { Region = 0, Window = 1, Monitor = 2, Freestyle = 3, Polygon = 4 };
 static Mode g_mode = Mode::Region;
-static Mode g_lastMode = Mode::Region; // onthoudt de laatst gekozen mode (tray/overlay)
+static Mode g_lastMode = Mode::Region;   // onthoudt de laatst gekozen mode (tray/overlay)
 static const wchar_t* ModeText(Mode m) {
     switch (m) {
     case Mode::Region:  return L"Mode: Region";
     case Mode::Window:  return L"Mode: Window";
     case Mode::Monitor: return L"Mode: Monitor";
-	case Mode::Freestyle: return L"Mode: Freestyle";
+    case Mode::Freestyle: return L"Mode: Freestyle";
     case Mode::Polygon: return L"Mode: Polygon";
     default:            return L"Mode: ?";
     }
@@ -85,15 +85,12 @@ static bool EnsureSingleInstance() {
 // -----------------------------
 static constexpr UINT WM_TRAY = WM_APP + 10;
 static constexpr UINT TRAY_ID = 1;
-
 static constexpr UINT TRAY_CAPTURE_NOW = 3999;
-
 static constexpr UINT TRAY_CAP_REGION = 4001;
 static constexpr UINT TRAY_CAP_WINDOW = 4002;
 static constexpr UINT TRAY_CAP_MONITOR = 4003;
 static constexpr UINT TRAY_CAP_FREE = 4004;
-static constexpr UINT TRAY_CAP_POLY   = 4005;
-
+static constexpr UINT TRAY_CAP_POLY = 4005;
 static constexpr UINT TRAY_NAME_PRESET1 = 4051;
 static constexpr UINT TRAY_NAME_PRESET2 = 4052;
 static constexpr UINT TRAY_NAME_PRESET3 = 4053;
@@ -101,12 +98,9 @@ static constexpr UINT TRAY_NAME_PRESET4 = 4054;
 static constexpr UINT TRAY_FMT_PNG = 4060;
 static constexpr UINT TRAY_FMT_JPEG = 4061;
 static constexpr UINT TRAY_FMT_BMP = 4062;
-
 static constexpr UINT TRAY_TOGGLE_AUTODISMISS = 4070;
-
 static constexpr UINT TRAY_OPEN_SAVEDIR = 4080;
 static constexpr UINT TRAY_SET_SAVEDIR = 4081;
-
 static constexpr UINT TRAY_EXIT = 4099;
 
 static NOTIFYICONDATAW g_nid{};
@@ -117,9 +111,9 @@ static bool g_hotkeyOk = false;
 // Globals (windows)
 // -----------------------------
 static HINSTANCE g_hInst = nullptr;
-static HWND g_hwndMsg = nullptr;   // message-only window (hotkey)
-static HWND g_hwndOverlay = nullptr;   // capture overlay
-static HWND g_hwndPreview = nullptr;   // preview window
+static HWND g_hwndMsg = nullptr;         // message-only window (hotkey)
+static HWND g_hwndOverlay = nullptr;     // capture overlay
+static HWND g_hwndPreview = nullptr;     // preview window
 
 // -----------------------------
 // Selectie state (overlay)
@@ -162,13 +156,17 @@ static RECT g_polyBoundsClient{};
 static POINT g_polyHoverClient{};
 static bool g_polyHoverValid = false;
 
-static bool g_captureHasAlpha = false;   // straks voor preview + save
+static bool g_captureHasAlpha = false;       // straks voor preview + save
+
+static void PolyReset();
+static void LassoReset();
+static void FinalizeFreeformCapture(HWND hwnd);
 
 // -----------------------------
 // Save format (persistent)
 // -----------------------------
 enum class SaveFormat { Png = 0, Jpeg = 1, Bmp = 2 };
-static SaveFormat g_saveFormat = SaveFormat::Png; // default = PNG
+static SaveFormat g_saveFormat = SaveFormat::Png;         // default = PNG
 
 static const wchar_t* SaveFormatText(SaveFormat f) {
     switch (f) {
@@ -188,18 +186,18 @@ static RECT g_btnEdit{};
 static RECT g_btnDismiss{};
 static RECT g_rcStatus{};
 static std::wstring g_statusText;
-static bool g_autoDismissAfterSave = false;
+static bool g_autoDismissAfterSave = true;
 
-static std::wstring g_saveDir;         // persistent
-static std::wstring g_lastSavedFile;   // persistent
-static std::wstring g_editorExe;       // persistent: "Open in..." program
-static std::wstring g_tempEditFile;    // alleen voor huidige preview/capture
+static std::wstring g_saveDir;               // persistent
+static std::wstring g_lastSavedFile;         // persistent
+static std::wstring g_editorExe;             // persistent: "Open in..." program
+static std::wstring g_tempEditFile;          // alleen voor huidige preview/capture
 // -----------------------------
 // Filename format (persistent)
 // -----------------------------
-static int g_namePreset = 1;              // 1..4
-static ULONGLONG g_lastNameKey = 0;       // yyyymmddhhmmss
-static int g_nameCounter = 0;             // 1..999 (reset per date)
+static int g_namePreset = 3;                 // 1..4
+static ULONGLONG g_lastNameKey = 0;          // yyyymmddhhmmss
+static int g_nameCounter = 0;                // 1..999 (reset per day)
 
 static constexpr UINT_PTR TIMER_STATUS_CLEAR = 1;
 
@@ -210,7 +208,6 @@ static HICON AppIconBig();
 static HICON AppIconSmall();
 static HICON TrayIconSmall();
 
-#pragma region Helpers: strings, directories, INI settings
 // =========================================================
 // Helpers: strings, directories, INI settings
 // =========================================================
@@ -462,8 +459,7 @@ static void PreviewDropTopmost(HWND hwnd) {
     SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
-#pragma endregion
-#pragma region Helpers: geometry, UI
+
 // =========================================================
 // Helpers: geometry, UI
 // =========================================================
@@ -640,8 +636,7 @@ static void SetStatus(HWND hwndPreview, const std::wstring& s) {
     InvalidateRect(hwndPreview, nullptr, TRUE);
     SetTimer(hwndPreview, TIMER_STATUS_CLEAR, 1500, nullptr);
 }
-#pragma endregion
-#pragma region Dialog helpers: Pick folder / Pick exe
+
 // =========================================================
 // Dialog helpers: Pick folder / Pick exe
 // =========================================================
@@ -752,8 +747,7 @@ static bool PickExe(HWND owner, std::wstring& outExe) {
 
     return !outExe.empty();
 }
-#pragma endregion
-#pragma region Capture + Clipboard + Save
+
 // =========================================================
 // Capture + Clipboard + Save
 // =========================================================
@@ -1168,8 +1162,7 @@ static void OpenPath(const std::wstring& path) {
     if (path.empty()) return;
     ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
-#pragma endregion
-#pragma region Menus
+
 // =========================================================
 // Menus
 // =========================================================
@@ -1219,41 +1212,38 @@ static void ShowEditMenu(HWND hwnd) {
     TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_NOANIMATION, pt.x, pt.y, 0, hwnd, nullptr);
     DestroyMenu(menu);
 }
-#pragma endregion
-#pragma region Preview layout + lifecycle
+
 // =========================================================
 // Preview layout + lifecycle
 // =========================================================
 static void LayoutPreview(HWND hwnd) {
-    RECT rc{};
+    RECT rc;
     GetClientRect(hwnd, &rc);
+    int clientW = rc.right;
+    int clientH = rc.bottom;
 
-    const int pad = 12;
-    const int barH = 52;       // knoppenbalk
-    const int statusH = 22;    // statusbar onderaan
-    const int btnW = 110;
-    const int btnH = 34;
-    const int gap = 10;
+    // Afmetingen voor de UI elementen
+    int margin = 10;
+    int btnW = 80;
+    int btnH = 30;
+    int gap = 8;
+    int statusH = 20;
 
-    // statusbar (hele onderrand)
-    g_rcStatus = rc;
-    g_rcStatus.top = rc.bottom - statusH;
+    // 1. De knoppen onderaan (Save, Edit, Dismiss)
+    // We centreren de knoppengroep horizontaal
+    int totalButtonsW = (btnW * 3) + (gap * 2);
+    int x0 = (clientW - totalButtonsW) / 2;
+    int yButtons = clientH - margin - btnH;
 
-    // image area
-    g_rcImage = rc;
-    g_rcImage.left += pad;
-    g_rcImage.top += pad;
-    g_rcImage.right -= pad;
-    g_rcImage.bottom -= (barH + statusH + pad);
+    g_btnSave = { x0, yButtons, x0 + btnW, yButtons + btnH };
+    g_btnEdit = { x0 + btnW + gap, yButtons, x0 + (btnW + gap) + btnW, yButtons + btnH };
+    g_btnDismiss = { x0 + (btnW + gap) * 2, yButtons, x0 + (btnW + gap) * 2 + btnW, yButtons + btnH };
 
-    // buttons (boven statusbar)
-    int totalW = btnW * 3 + gap * 2;
-    int x0 = (rc.right - totalW) / 2;
-    int y0 = rc.bottom - statusH - barH + (barH - btnH) / 2;
+    // 2. Status tekst (vlak boven de knoppen)
+    g_rcStatus = { margin, yButtons - statusH - 5, clientW - margin, yButtons - 5 };
 
-    g_btnSave = { x0,                      y0, x0 + btnW,                   y0 + btnH };
-    g_btnEdit = { x0 + (btnW + gap) * 1,   y0, x0 + (btnW + gap) * 1 + btnW, y0 + btnH };
-    g_btnDismiss = { x0 + (btnW + gap) * 2,   y0, x0 + (btnW + gap) * 2 + btnW, y0 + btnH };
+    // 3. Het afbeeldingsgebied (alles daarboven)b
+    g_rcImage = { margin, margin, clientW - margin, g_rcStatus.top - 5 };
 }
 
 static void DestroyOverlay();
@@ -1266,8 +1256,7 @@ static void DestroyPreview() {
     FreeCapture();
     g_statusText.clear();
 }
-#pragma endregion
-#pragma region Preview WindowProc
+
 // =========================================================
 // Preview WindowProc
 // =========================================================
@@ -1323,7 +1312,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
 
-    // === drag window by clicking anywhere except buttons
+                     // === drag window by clicking anywhere except buttons
     case WM_NCHITTEST: {
         LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
         if (hit != HTCLIENT) return hit;
@@ -1337,7 +1326,7 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return HTCAPTION;
     }
 
-    // === remember position/size after move/resize
+                     // === remember position/size after move/resize
     case WM_EXITSIZEMOVE: {
         RECT wr{};
         GetWindowRect(hwnd, &wr);
@@ -1665,82 +1654,50 @@ static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-#pragma endregion
-#pragma region Preview creation
+
 // =========================================================
 // Preview creation
 // =========================================================
 static void CreatePreviewWindow() {
-    if (g_hwndPreview) return;
+    if (g_hwndPreview) DestroyWindow(g_hwndPreview);
+    if (!g_captureBmp) return;
 
-    static bool registered = false;
-    if (!registered) {
-        WNDCLASSW wc{};
-        wc.lpfnWndProc = PreviewProc;
-        wc.hInstance = g_hInst;
-        wc.lpszClassName = L"SnipLitePreview";
-        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        RegisterClassW(&wc);
-        registered = true;
-    }
+    // --- 1. Definieer de benodigdheden voor de UI ---
+    const int MIN_WIDTH_FOR_BUTTONS = 300; // Ruimte voor Save, Edit, Dismiss
+    const int BUTTON_BAR_HEIGHT = 60;      // Hoogte van de onderste balk
+    const int MARGIN = 10;                 // Marge rondom de afbeelding
 
-    RECT wa{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    // --- 2. Bereken de ideale binnenmaten (Client Area) ---
+    // We nemen de breedte van de capture, maar nooit minder dan de knoppen nodig hebben
+    int clientW = (g_captureW > (MIN_WIDTH_FOR_BUTTONS - 2 * MARGIN))
+        ? (g_captureW + 2 * MARGIN)
+        : MIN_WIDTH_FOR_BUTTONS;
 
-    int maxW = (int)((wa.right - wa.left) * 0.70);
-    int maxH = (int)((wa.bottom - wa.top) * 0.70);
+    int clientH = g_captureH + BUTTON_BAR_HEIGHT + MARGIN;
 
-    int w = (g_captureW > 0) ? g_captureW : 600;
-    int h = (g_captureH > 0) ? g_captureH : 400;
+    // --- 3. Bereken de vensterpositie (Centreren op scherm) ---
+    int screenW = GetSystemMetrics(SM_CXSCREEN);
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
 
-    int winW = w + 24;
-    int winH = h + 24 + 52;
+    int x = (screenW - clientW) / 2;
+    int y = (screenH - clientH) / 2;
 
-    double sx = (winW > 0) ? (double)maxW / (double)winW : 1.0;
-    double sy = (winH > 0) ? (double)maxH / (double)winH : 1.0;
-    double s = (sx < sy) ? sx : sy;
-    if (s > 1.0) s = 1.0;
-
-    winW = (int)(winW * s);
-    winH = (int)(winH * s);
-
-    int x = wa.left + ((wa.right - wa.left) - winW) / 2;
-    int y = wa.top + ((wa.bottom - wa.top) - winH) / 2;
-
-    // restore vorige positie/grootte (als aanwezig)
-    int rx = IniReadInt(L"Preview", L"X", x);
-    int ry = IniReadInt(L"Preview", L"Y", y);
-    int rw = IniReadInt(L"Preview", L"W", winW);
-    int rh = IniReadInt(L"Preview", L"H", winH);
-
-    if (rw < 300) rw = winW;
-    if (rh < 200) rh = winH;
-
+    // --- 4. Maak het venster aan met de berekende maten ---
     g_hwndPreview = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-        L"SnipLitePreview",
-        L"",
-        WS_POPUP,
-        rx, ry, rw, rh,
+        L"SnipLitePreview", L"Snip-Lite Preview",
+        WS_POPUP | WS_BORDER, // Let op: WS_POPUP heeft geen titelbalk
+        x, y, clientW, clientH,
         nullptr, nullptr, g_hInst, nullptr
     );
 
-    if (!g_hwndPreview) {
-        MessageBeep(MB_ICONERROR);
-        return;
+    if (g_hwndPreview) {
+        ShowWindow(g_hwndPreview, SW_SHOW);
+        UpdateWindow(g_hwndPreview);
+        SetForegroundWindow(g_hwndPreview);
     }
-
-    HICON hBig = AppIconBig();
-    HICON hSmall = AppIconSmall();
-    if (hBig)   SendMessageW(g_hwndPreview, WM_SETICON, ICON_BIG, (LPARAM)hBig);
-    if (hSmall) SendMessageW(g_hwndPreview, WM_SETICON, ICON_SMALL, (LPARAM)hSmall);
-
-    ShowWindow(g_hwndPreview, SW_SHOW);
-    SetForegroundWindow(g_hwndPreview);
-    SetFocus(g_hwndPreview);
 }
-#pragma endregion
-#pragma region Overlay
+
 // =========================================================
 // Overlay
 // =========================================================
@@ -1854,19 +1811,30 @@ static void PolyUndoLast() {
     PolyRecalcBounds();
 }
 
+// De nieuwe generieke functie
 static void ShapeReset(std::vector<POINT>& pts, RECT& bounds, bool* selectingFlag = nullptr) {
     pts.clear();
     bounds = { 0, 0, 0, 0 };
     if (selectingFlag) *selectingFlag = false;
 }
 
+// De 'bruggen' voor de bestaande 7 aanroepen:
+static void LassoReset() {
+    ShapeReset(g_lassoPtsClient, g_lassoBoundsClient, &g_lassoSelecting);
+}
+
+static void PolyReset() {
+    ShapeReset(g_polyPtsClient, g_polyBoundsClient, &g_polySelecting);
+    g_polyHoverValid = false; // Specifiek voor polygoon
+}
+
 static void DestroyOverlay() {
     LassoReset();
-	PolyReset();
+    PolyReset();
     g_selecting = false;
     g_hasSelection = false;
     ZeroMemory(&g_selRectClient, sizeof(g_selRectClient));
-	ClearHover();
+    ClearHover();
 
     if (g_hwndOverlay) {
         DestroyWindow(g_hwndOverlay);
@@ -1909,7 +1877,7 @@ static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr, HW
     FreeCapture();
     g_captureHasAlpha = false;  // belangrijk: normale captures zijn opaque
     const bool capOk = CaptureRectToBitmap(sr, g_captureBmp, g_captureW, g_captureH);
-    const bool clipOk = capOk ? CopyToClipboard(g_captureBmp, false);
+    const bool clipOk = capOk && CopyToClipboard(g_captureBmp, false);
 
     if (clipOk) {
         DestroyOverlay();
@@ -1922,11 +1890,6 @@ static bool CaptureScreenRectAndShowPreview(HWND hwndOverlay, const RECT& sr, HW
     ShowWindow(hwndOverlay, SW_SHOW);
     InvalidateRect(hwndOverlay, nullptr, TRUE);
     return false;
-}
-
-static void PolygonFinalize(HWND hwnd) {
-    g_polySelecting = false;
-    FinalizeFreeformCapture(hwnd, g_polyPtsClient, g_polyBoundsClient, false, PolyReset);
 }
 
 static void FinalizeFreeformCapture(HWND hwnd, const std::vector<POINT>& ptsClient, RECT boundsClient, bool doFeather, auto resetCallback) {
@@ -1981,6 +1944,11 @@ static void FinalizeFreeformCapture(HWND hwnd, const std::vector<POINT>& ptsClie
     resetCallback();
 }
 
+static void PolygonFinalize(HWND hwnd) {
+    g_polySelecting = false;
+    FinalizeFreeformCapture(hwnd, g_polyPtsClient, g_polyBoundsClient, false, PolyReset);
+}
+
 static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_SETCURSOR:
@@ -2008,7 +1976,7 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
 
         // Voor de rechthoek-modus (indien je die vlag gebruikt)
-        g_isSelecting = false;
+        g_selecting = false;
 
         ReleaseCapture();
         InvalidateRect(hwnd, nullptr, TRUE);
@@ -2192,8 +2160,8 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             sr.bottom = ow.top + g_selRectClient.bottom;
 
             g_tempEditFile.clear();
-        CaptureScreenRectAndShowPreview(hwnd, sr);
-        return 0;
+            CaptureScreenRectAndShowPreview(hwnd, sr);
+            return 0;
         }
 
         // Window/Monitor: capture on click
@@ -2351,13 +2319,13 @@ static LRESULT CALLBACK OverlayProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
     case WM_DESTROY:
         return 0;
-		}
-   return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-    
+
 static void CreateOverlay() {
     if (g_hwndOverlay) return;
-	ClearHover();
+    ClearHover();
 
     static bool registered = false;
     if (!registered) {
@@ -2388,8 +2356,7 @@ static void CreateOverlay() {
     SetForegroundWindow(g_hwndOverlay);
     SetFocus(g_hwndOverlay);
 }
-#pragma endregion
-#pragma region Message-only window (hotkey)
+
 // =========================================================
 // Message-only window (hotkey)
 // =========================================================
@@ -2452,7 +2419,7 @@ static void TrayShowMenu(HWND hwnd) {
     AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Window ? MF_CHECKED : 0), TRAY_CAP_WINDOW, L"Window");
     AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Monitor ? MF_CHECKED : 0), TRAY_CAP_MONITOR, L"Monitor");
     AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Freestyle ? MF_CHECKED : 0), TRAY_CAP_FREE, L"Freestyle");
-    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Polygon  ? MF_CHECKED : 0), TRAY_CAP_POLY,    L"Polygon");
+    AppendMenuW(mode, MF_STRING | MF_RADIOCHECK | (g_lastMode == Mode::Polygon ? MF_CHECKED : 0), TRAY_CAP_POLY, L"Polygon");
 
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)mode, L"Select Mode");
 
@@ -2517,7 +2484,7 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             else CreateOverlay();
         }
         return 0;
-    
+
     case WM_CREATE:
         TrayAdd(hwnd);
         return 0;
@@ -2605,8 +2572,7 @@ static LRESULT CALLBACK MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
-#pragma endregion
-#pragma region Entry point
+
 // =========================================================
 // Entry point
 // =========================================================
@@ -2636,6 +2602,15 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
         wc.hInstance = hInst;
         wc.lpszClassName = L"SnipLiteMsgWindow";
         RegisterClassW(&wc);
+
+        WNDCLASSW wcPrev{};
+        wcPrev.lpfnWndProc = PreviewProc; // Zorg dat deze functie bestaat!
+        wcPrev.hInstance = hInst;
+        wcPrev.hCursor = LoadCursor(nullptr, IDC_ARROW);
+        wcPrev.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wcPrev.lpszClassName = L"SnipLitePreview";
+        RegisterClassW(&wcPrev);
+
         registered = true;
     }
 
@@ -2663,7 +2638,3 @@ int WINAPI wWinMain(_In_ HINSTANCE hInst,
     }
     return 0;
 }
-
-#pragma endregion
-
-
