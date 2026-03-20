@@ -41,7 +41,7 @@ A fast snipping tool without a “big GUI”: hotkey/tray → selection overlay 
 
 ## 5) Persistence (INI)
 - `%LOCALAPPDATA%\snip-lite\settings.ini`
-- Stores: save folder, format, auto-dismiss, editor path, last saved file, last mode
+- Stores: save folder, format, auto-dismiss, editor path, last saved file, last mode, Preview window position
 
 ## 6) Key code areas (main.cpp)
 - Message-only window + hotkey: `MsgProc`, `wWinMain`
@@ -65,14 +65,3 @@ A fast snipping tool without a “big GUI”: hotkey/tray → selection overlay 
 - CMake preset: `vs2026-x64`
 - Build presets: `debug`, `release`
 - Output EXE in `build/vs2026-x64/<Debug|Release>/snip_lite.exe`
-
-## 8) Known issues / TODOs
-- Packaging not done yet:
-  - Portable ZIP release
-  - Installer (setup) release
-
-## 9) Next milestone: v1.0.0 release work
-- Produce Release build artifacts:
-  - ZIP (portable)
-  - Installer
-- Create a simple release webpage (later hosted)
